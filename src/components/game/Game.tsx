@@ -103,7 +103,7 @@ export default function Game() {
             gameData.current.playerVelocity.set(0, 0, 0);
             
             const { camera, player } = gameData.current;
-            const idealOffset = new THREE.Vector3(0, 8, -25);
+            const idealOffset = new THREE.Vector3(0, 10, -40);
             idealOffset.applyQuaternion(player.quaternion);
             idealOffset.add(player.position);
             camera.position.copy(idealOffset);
@@ -123,27 +123,20 @@ export default function Game() {
     const createVoxelPlane = (color: THREE.Color) => {
         const plane = new THREE.Group();
         const bodyMat = new THREE.MeshBasicMaterial({ color });
-        const wingMat = new THREE.MeshBasicMaterial({ color: new THREE.Color(0xcccccc) });
-        const propMat = new THREE.MeshBasicMaterial({ color: 0x333333 });
 
+        // Fuselage
         const body = new THREE.Mesh(new THREE.BoxGeometry(1.5, 1, 4), bodyMat);
         plane.add(body);
-        const topWing = new THREE.Mesh(new THREE.BoxGeometry(8, 0.2, 1.5), wingMat);
-        topWing.position.y = 0.8;
-        plane.add(topWing);
-        const bottomWing = new THREE.Mesh(new THREE.BoxGeometry(7, 0.2, 1.2), wingMat);
-        bottomWing.position.y = -0.3;
-        plane.add(bottomWing);
-        const tail = new THREE.Mesh(new THREE.BoxGeometry(3, 0.2, 1), wingMat);
+
+        // Main Wings
+        const wings = new THREE.Mesh(new THREE.BoxGeometry(8, 0.4, 1.5), bodyMat);
+        wings.position.y = 0.2;
+        plane.add(wings);
+        
+        // Tail wing
+        const tail = new THREE.Mesh(new THREE.BoxGeometry(3, 0.2, 1), bodyMat);
         tail.position.set(0, 0.2, -2.5);
         plane.add(tail);
-        const rudder = new THREE.Mesh(new THREE.BoxGeometry(0.2, 1, 1), wingMat);
-        rudder.position.set(0, 0.8, -2.5);
-        plane.add(rudder);
-        const prop = new THREE.Mesh(new THREE.BoxGeometry(0.2, 2, 0.2), propMat);
-        prop.position.z = 2.2;
-        plane.add(prop);
-        (plane as any).prop = prop;
 
         return plane;
     };
@@ -177,18 +170,17 @@ export default function Game() {
 
         playerVelocity.multiplyScalar(0.98); // Drag
         player.position.add(playerVelocity.clone().multiplyScalar(delta));
-        (player as any).prop.rotation.z += delta * 20 * throttle;
-
+        
         // Camera follow
-        const idealOffset = new THREE.Vector3(0, 8, -25);
+        const idealOffset = new THREE.Vector3(0, 10, -40);
         idealOffset.applyQuaternion(player.quaternion);
-        idealOffset.add(player.position);
+        const idealPosition = player.position.clone().add(idealOffset);
+
+        const lerpFactor = 1 - Math.exp(-5 * delta);
+        camera.position.lerp(idealPosition, lerpFactor);
         
-        const lerpFactor = 1 - Math.exp(-10 * delta); // Frame-rate independent lerp
-        camera.position.lerp(idealOffset, lerpFactor);
-        
-        camera.lookAt(player.position);
-        camera.up.set(0, 1, 0); // Prevent camera roll
+        const lookAtPoint = player.position.clone().add(new THREE.Vector3(0, 0, 20).applyQuaternion(player.quaternion));
+        camera.lookAt(lookAtPoint);
 
         // Gun logic
         gameData.current.gunCooldown = Math.max(0, gameData.current.gunCooldown - delta);
@@ -231,7 +223,6 @@ export default function Game() {
             
             const enemySpeed = 20 + wave * 2;
             enemy.mesh.position.add(forward.multiplyScalar(enemySpeed * delta));
-            (enemy.mesh as any).prop.rotation.z += delta * 15;
 
             enemy.timeSinceShot += delta;
             if (distance < 200 && enemy.timeSinceShot > 2) {
@@ -304,7 +295,7 @@ export default function Game() {
 
     const createExplosion = (position: THREE.Vector3) => {
         gameData.current.sounds.explosion?.triggerAttackRelease("2n");
-        for (let i = 0; i < 25; i++) {
+        for (let i = 0; i < 10; i++) {
             const velocity = new THREE.Vector3(
                 (Math.random() - 0.5) * 0.5,
                 (Math.random() - 0.5) * 0.5,
@@ -340,7 +331,7 @@ export default function Game() {
 
         // World (Clouds and Islands)
         const cloudMat = new THREE.MeshBasicMaterial({ color: 0xffffff, opacity: 0.9, transparent: true });
-        for(let i = 0; i < 50; i++) {
+        for(let i = 0; i < 20; i++) {
             const cloud = new THREE.Group();
             for(let j=0; j<5; j++) {
                 const part = new THREE.Mesh(new THREE.BoxGeometry(10,5,5), cloudMat);
@@ -352,7 +343,7 @@ export default function Game() {
         }
         
         const islandMat = new THREE.MeshBasicMaterial({ color: 0x8B4513 });
-         for(let i = 0; i < 10; i++) {
+         for(let i = 0; i < 5; i++) {
             const island = new THREE.Mesh(new THREE.BoxGeometry(50, 20, 50), islandMat);
             island.position.set((Math.random() - 0.5) * 2000, Math.random() * 20 - 10, (Math.random() - 0.5) * 2000);
             scene.add(island);
