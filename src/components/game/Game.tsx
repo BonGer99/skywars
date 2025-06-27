@@ -41,11 +41,11 @@ export default function Game() {
     const [wave, setWave] = useState(0);
     const [playerHealth, setPlayerHealth] = useState(100);
     const [gunOverheat, setGunOverheat] = useState(0);
+    const [altitude, setAltitude] = useState(0);
     const { toast } = useToast();
 
     const gameData = useRef({
         scene: new THREE.Scene(),
-        // Initialize with a default aspect ratio to avoid using `window` on the server
         camera: new THREE.PerspectiveCamera(75, 1, 0.1, 2000),
         renderer: null as THREE.WebGLRenderer | null,
         player: null as THREE.Group | null,
@@ -148,11 +148,10 @@ export default function Game() {
         if (!player) return;
 
         // Player controls
-        const throttle = 0.7; 
-        const moveSpeed = 50 * throttle;
         const PITCH_SPEED = 1.0;
         const ROLL_SPEED = 1.5;
-        const MAX_SPEED = 80; // Capped player speed
+        const MAX_SPEED = 120;
+        const ACCELERATION = 80.0;
 
         if (keysPressed['w'] || keysPressed['W']) player.rotateX(PITCH_SPEED * delta);
         if (keysPressed['s'] || keysPressed['S']) player.rotateX(-PITCH_SPEED * delta);
@@ -160,25 +159,38 @@ export default function Game() {
         if (keysPressed['d'] || keysPressed['D']) player.rotateZ(-ROLL_SPEED * delta);
 
         const forward = new THREE.Vector3(0, 0, 1).applyQuaternion(player.quaternion);
-        playerVelocity.add(forward.multiplyScalar(delta * moveSpeed));
+        
+        if (keysPressed['shift']) {
+            playerVelocity.add(forward.multiplyScalar(delta * ACCELERATION));
+        }
 
         if (playerVelocity.length() > MAX_SPEED) {
             playerVelocity.normalize().multiplyScalar(MAX_SPEED);
         }
 
-        playerVelocity.multiplyScalar(0.98); // Drag
+        playerVelocity.multiplyScalar(0.99); // A little less drag
         player.position.add(playerVelocity.clone().multiplyScalar(delta));
         
+        const groundLevel = -50;
+        const currentAltitude = player.position.y - groundLevel;
+        setAltitude(Math.max(0, currentAltitude));
+
+        if (player.position.y <= groundLevel) {
+            createExplosion(player.position);
+            setGameState('gameover');
+            player.position.y = groundLevel;
+            playerVelocity.y = 0;
+        }
+        
         // Camera follow
-        const idealOffset = new THREE.Vector3(0, 20, -60); // Pulled camera back and up
+        const idealOffset = new THREE.Vector3(0, 20, -60);
         const idealPosition = player.position.clone().add(idealOffset);
         
         const lerpFactor = 1 - Math.exp(-4 * delta);
         camera.position.lerp(idealPosition, lerpFactor);
         
-        const lookAtPoint = player.position.clone().add(new THREE.Vector3(0, 5, 0)); // Look slightly above the plane
+        const lookAtPoint = player.position.clone().add(new THREE.Vector3(0, 5, 0));
         camera.lookAt(lookAtPoint);
-        // Removed camera roll for stability
         camera.rotation.z = 0;
 
 
@@ -312,10 +324,14 @@ export default function Game() {
 
         const { scene, camera } = gameData.current;
         const renderer = new THREE.WebGLRenderer({ antialias: false });
+        
         // Set size and aspect ratio here, inside useEffect, to access window object
-        camera.aspect = window.innerWidth / window.innerHeight;
-        camera.updateProjectionMatrix();
-        renderer.setSize(window.innerWidth, window.innerHeight);
+        if (typeof window !== 'undefined') {
+          camera.aspect = window.innerWidth / window.innerHeight;
+          camera.updateProjectionMatrix();
+          renderer.setSize(window.innerWidth, window.innerHeight);
+        }
+        
         renderer.setPixelRatio(1); // Performance boost
         mountRef.current.appendChild(renderer.domElement);
         gameData.current.renderer = renderer;
@@ -426,7 +442,7 @@ export default function Game() {
                             <CardTitle className="text-5xl font-bold font-headline text-primary">Ready for Takeoff?</CardTitle>
                         </CardHeader>
                         <CardContent className="p-8 pt-0">
-                            <p className="text-muted-foreground mb-6">Use your WASD keys to steer, and Left Click or Space to fire. Good luck!</p>
+                            <p className="text-muted-foreground mb-6">Use WASD to steer, Shift to accelerate, and Left Click or Space to fire. Good luck!</p>
                             <Button size="lg" className="w-full text-lg py-6" onClick={startGame}>
                                 Start Flight
                             </Button>
@@ -436,7 +452,7 @@ export default function Game() {
             )}
 
             {gameState === 'playing' && (
-                <HUD score={score} wave={wave} health={playerHealth} overheat={gunOverheat} />
+                <HUD score={score} wave={wave} health={playerHealth} overheat={gunOverheat} altitude={altitude} />
             )}
 
             {gameState === 'gameover' && (

@@ -6,9 +6,10 @@ interface HUDProps {
   wave: number;
   health: number;
   overheat: number;
+  altitude: number;
 }
 
-export default function HUD({ score, wave, health, overheat }: HUDProps) {
+export default function HUD({ score, wave, health, overheat, altitude }: HUDProps) {
   return (
     <div className="absolute top-4 left-4 right-4 text-white font-headline pointer-events-none select-none">
       <div className="flex justify-between items-start">
@@ -21,6 +22,10 @@ export default function HUD({ score, wave, health, overheat }: HUDProps) {
             <div>
               <label className="text-sm font-medium">GUN HEAT</label>
               <Progress value={overheat} className="h-4 bg-gray-600/50" indicatorClassName="bg-accent" />
+            </div>
+            <div>
+              <label className="text-sm font-medium">ALTITUDE</label>
+              <div className="text-xl font-bold">{Math.round(altitude)}m</div>
             </div>
           </CardContent>
         </Card>
