@@ -77,7 +77,9 @@ function OnlinePageContent() {
       querySnapshot.forEach((doc) => {
         serversData.push({ id: doc.id, ...doc.data() } as Server);
       });
-      setServers(serversData);
+      // A true ping-based sort would require a more complex client-server check.
+      // For now, we'll just show the first three available servers.
+      setServers(serversData.slice(0, 3));
       setIsLoading(false);
     }, (error) => {
       console.error("Error fetching servers:", error);
@@ -111,10 +113,12 @@ function OnlinePageContent() {
     const serverId = searchParams.get('server');
     if (serverId && servers.length > 0) {
       const serverToJoin = servers.find(s => s.id === serverId);
+      // Ensure player hasn't already joined to prevent re-joining on hot-reload
       if (serverToJoin && !joinedServer) {
         handleJoinServer(serverToJoin);
       }
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [searchParams, servers]);
 
   const handleJoinServer = async (server: Server) => {
@@ -160,11 +164,6 @@ function OnlinePageContent() {
     const serverRef = doc(db, 'servers', joinedServer.id);
     const playerDocRef = doc(db, `servers/${joinedServer.id}/players`, playerDocId);
     
-    setJoinedServer(null);
-    setPlayerDocId(null);
-    setPlayersInLobby([]);
-    router.push('/online'); // Clear query params
-
     try {
       await deleteDoc(playerDocRef);
       await runTransaction(db, async (transaction) => {
@@ -174,8 +173,19 @@ function OnlinePageContent() {
           transaction.update(serverRef, { players: newPlayerCount });
         }
       });
+      
+      // Clear state and navigate only after successful DB operations
+      setJoinedServer(null);
+      setPlayerDocId(null);
+      setPlayersInLobby([]);
+      router.push('/online'); // Clear query params
     } catch (e) {
       console.error("Error leaving server: ", e);
+      toast({
+        title: "Error",
+        description: "Could not leave the server. Please try again.",
+        variant: "destructive",
+      });
     }
   };
 
@@ -192,8 +202,8 @@ function OnlinePageContent() {
   
   if (isLoading) {
     return (
-      <div className="flex items-center justify-center gap-2 text-primary text-xl">
-        <Loader2 className="h-6 w-6 animate-spin" />
+      <div className="flex items-center justify-center min-h-screen text-primary text-xl">
+        <Loader2 className="mr-2 h-6 w-6 animate-spin" />
         Loading Servers...
       </div>
     );
@@ -242,7 +252,9 @@ function OnlinePageContent() {
                             <Copy className="h-4 w-4" />
                         </Button>
                     </div>
-                     <Button size="lg" className="w-full" disabled>Ready to Fly (Coming Soon)</Button>
+                     <Link href="/play" passHref className="w-full">
+                        <Button size="lg" className="w-full">Ready to Fly</Button>
+                     </Link>
                 </div>
             </div>
           </CardContent>
@@ -267,9 +279,9 @@ function OnlinePageContent() {
     <div className="w-full max-w-5xl space-y-8">
       <Card className="bg-card/80 backdrop-blur-sm border-primary/20 shadow-xl text-center">
         <CardHeader>
-          <CardTitle className="text-4xl font-bold font-headline text-primary">Public Servers</CardTitle>
+          <CardTitle className="text-4xl font-bold font-headline text-primary">Join a Server</CardTitle>
           <CardDescription>
-            Enter your callsign, then choose a server to join the fight.
+            Enter your callsign, then choose from the top servers to join the fight.
           </CardDescription>
         </CardHeader>
         <CardContent className="max-w-sm mx-auto">
@@ -286,7 +298,7 @@ function OnlinePageContent() {
         </CardContent>
       </Card>
       
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
         {servers.map((server) => (
           <Card key={server.id}>
             <CardHeader>
@@ -323,7 +335,12 @@ function OnlinePageContent() {
 export default function OnlinePage() {
   return (
     <main className="flex min-h-screen flex-col items-center justify-center p-8 sm:p-24 bg-background">
-      <Suspense fallback={<div className="text-primary text-xl">Loading...</div>}>
+      <Suspense fallback={
+          <div className="flex items-center justify-center min-h-screen text-primary text-xl">
+            <Loader2 className="mr-2 h-6 w-6 animate-spin" />
+            Loading...
+          </div>
+      }>
         <OnlinePageContent />
       </Suspense>
     </main>
