@@ -23,7 +23,7 @@ class Particle {
         this.mesh = new THREE.Mesh(geometry, material);
         this.mesh.position.copy(position);
         this.velocity = velocity;
-        this.lifespan = Math.random() * 60 + 30; // 0.5 to 1.5 seconds
+        this.lifespan = Math.random() * 30 + 15; // 0.25 to 0.75 seconds
         scene.add(this.mesh);
     }
 
@@ -103,7 +103,7 @@ export default function Game() {
             gameData.current.playerVelocity.set(0, 0, 0);
             
             const { camera, player } = gameData.current;
-            const idealOffset = new THREE.Vector3(0, 10, -40);
+            const idealOffset = new THREE.Vector3(0, 15, -50);
             idealOffset.applyQuaternion(player.quaternion);
             idealOffset.add(player.position);
             camera.position.copy(idealOffset);
@@ -117,8 +117,7 @@ export default function Game() {
         gameData.current.bullets.forEach(b => gameData.current.scene.remove(b.mesh));
         gameData.current.bullets = [];
         
-        spawnWave(1);
-    }, [spawnWave]);
+    }, []);
 
     const createVoxelPlane = (color: THREE.Color) => {
         const plane = new THREE.Group();
@@ -172,15 +171,16 @@ export default function Game() {
         player.position.add(playerVelocity.clone().multiplyScalar(delta));
         
         // Camera follow
-        const idealOffset = new THREE.Vector3(0, 10, -40);
-        idealOffset.applyQuaternion(player.quaternion);
+        const idealOffset = new THREE.Vector3(0, 15, -50);
         const idealPosition = player.position.clone().add(idealOffset);
 
         const lerpFactor = 1 - Math.exp(-5 * delta);
         camera.position.lerp(idealPosition, lerpFactor);
         
-        const lookAtPoint = player.position.clone().add(new THREE.Vector3(0, 0, 20).applyQuaternion(player.quaternion));
+        const lookAtPoint = player.position.clone().add(new THREE.Vector3(0, 0, 50).applyQuaternion(player.quaternion));
         camera.lookAt(lookAtPoint);
+        camera.quaternion.copy(player.quaternion);
+
 
         // Gun logic
         gameData.current.gunCooldown = Math.max(0, gameData.current.gunCooldown - delta);
@@ -285,17 +285,13 @@ export default function Game() {
             setGameState('gameover');
         }
         
-        if(gameData.current.enemies.length === 0 && gameState === 'playing') {
-            spawnWave(wave + 1);
-        }
-
         gameData.current.renderer?.render(gameData.current.scene, camera);
         requestAnimationFrame(gameLoop);
-    }, [gameState, playerHealth, gunOverheat, spawnWave, wave]);
+    }, [gameState, playerHealth, gunOverheat, wave]);
 
     const createExplosion = (position: THREE.Vector3) => {
         gameData.current.sounds.explosion?.triggerAttackRelease("2n");
-        for (let i = 0; i < 10; i++) {
+        for (let i = 0; i < 5; i++) {
             const velocity = new THREE.Vector3(
                 (Math.random() - 0.5) * 0.5,
                 (Math.random() - 0.5) * 0.5,
@@ -318,9 +314,6 @@ export default function Game() {
 
         scene.background = new THREE.Color(0x58ACFA);
         
-        const ambientLight = new THREE.AmbientLight(0xffffff, 1.5);
-        scene.add(ambientLight);
-
         // Ground
         const groundGeo = new THREE.PlaneGeometry(2000, 2000);
         const groundMat = new THREE.MeshBasicMaterial({ color: 0x3d85c6 });
@@ -330,8 +323,8 @@ export default function Game() {
         scene.add(ground);
 
         // World (Clouds and Islands)
-        const cloudMat = new THREE.MeshBasicMaterial({ color: 0xffffff, opacity: 0.9, transparent: true });
-        for(let i = 0; i < 20; i++) {
+        const cloudMat = new THREE.MeshBasicMaterial({ color: 0xffffff });
+        for(let i = 0; i < 8; i++) {
             const cloud = new THREE.Group();
             for(let j=0; j<5; j++) {
                 const part = new THREE.Mesh(new THREE.BoxGeometry(10,5,5), cloudMat);
@@ -343,7 +336,7 @@ export default function Game() {
         }
         
         const islandMat = new THREE.MeshBasicMaterial({ color: 0x8B4513 });
-         for(let i = 0; i < 5; i++) {
+         for(let i = 0; i < 2; i++) {
             const island = new THREE.Mesh(new THREE.BoxGeometry(50, 20, 50), islandMat);
             island.position.set((Math.random() - 0.5) * 2000, Math.random() * 20 - 10, (Math.random() - 0.5) * 2000);
             scene.add(island);
@@ -453,3 +446,5 @@ export default function Game() {
         </div>
     );
 }
+
+    
