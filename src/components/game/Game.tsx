@@ -6,7 +6,7 @@ import { useEffect, useRef, useState, useCallback } from 'react';
 import { generateOpponentBehavior, OpponentBehaviorOutput } from '@/ai/flows/ai-opponent-behavior';
 import HUD from '@/components/ui/HUD';
 import { Button } from '@/components/ui/button';
-import { Card, CardContent } from '@/components/ui/card';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Loader2 } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 
@@ -56,9 +56,6 @@ export default function Game() {
         keysPressed: {} as Record<string, boolean>,
         mousePosition: new THREE.Vector2(),
         playerVelocity: new THREE.Vector3(),
-        playerRollVelocity: 0,
-        playerPitchVelocity: 0,
-        throttle: 0.5,
         gunCooldown: 0,
         time: new THREE.Clock(),
         sounds: {
@@ -106,6 +103,12 @@ export default function Game() {
             gameData.current.player.position.set(0, 5, 0);
             gameData.current.player.rotation.set(0, 0, 0);
             gameData.current.playerVelocity.set(0, 0, 0);
+            
+            const { camera, player } = gameData.current;
+            const idealOffset = new THREE.Vector3(0, 4, -10);
+            idealOffset.add(player.position);
+            camera.position.copy(idealOffset);
+            camera.lookAt(player.position);
         }
         
         // Clear old game objects
@@ -149,28 +152,20 @@ export default function Game() {
         if (gameState !== 'playing') return;
 
         const delta = gameData.current.time.getDelta();
-        const { player, camera, keysPressed, mousePosition, playerVelocity, throttle } = gameData.current;
+        const { player, camera, keysPressed, playerVelocity } = gameData.current;
 
         if (!player) return;
 
         // Player controls
+        const throttle = 0.7; // Constant throttle
         const moveSpeed = 50 * throttle;
-        const targetPitch = mousePosition.y * 1.5;
-        const targetRoll = -mousePosition.x * 2.5;
-        
-        gameData.current.playerPitchVelocity = THREE.MathUtils.lerp(gameData.current.playerPitchVelocity, targetPitch, delta * 2);
-        gameData.current.playerRollVelocity = THREE.MathUtils.lerp(gameData.current.playerRollVelocity, targetRoll, delta * 2);
+        const PITCH_SPEED = 1.0;
+        const ROLL_SPEED = 1.5;
 
-        player.rotateX(gameData.current.playerPitchVelocity * delta);
-        player.rotateZ(gameData.current.playerRollVelocity * delta);
-
-        if (keysPressed['a'] || keysPressed['A']) player.rotateY(1.5 * delta);
-        if (keysPressed['d'] || keysPressed['D']) player.rotateY(-1.5 * delta);
-        if (keysPressed['q'] || keysPressed['Q']) player.rotateZ(3 * delta);
-        if (keysPressed['e'] || keysPressed['E']) player.rotateZ(-3 * delta);
-
-        if (keysPressed['w'] || keysPressed['W']) gameData.current.throttle = Math.min(1.0, throttle + delta * 0.5);
-        if (keysPressed['s'] || keysPressed['S']) gameData.current.throttle = Math.max(0.2, throttle - delta * 0.5);
+        if (keysPressed['w'] || keysPressed['W']) player.rotateX(PITCH_SPEED * delta);
+        if (keysPressed['s'] || keysPressed['S']) player.rotateX(-PITCH_SPEED * delta);
+        if (keysPressed['a'] || keysPressed['A']) player.rotateZ(ROLL_SPEED * delta);
+        if (keysPressed['d'] || keysPressed['D']) player.rotateZ(-ROLL_SPEED * delta);
 
         const forward = new THREE.Vector3(0, 0, 1).applyQuaternion(player.quaternion);
         playerVelocity.add(forward.multiplyScalar(delta * moveSpeed));
@@ -183,13 +178,13 @@ export default function Game() {
         idealOffset.applyQuaternion(player.quaternion);
         idealOffset.add(player.position);
         camera.position.lerp(idealOffset, delta * 5);
-        camera.lookAt(player.position.clone().add(new THREE.Vector3(0,0,10).applyQuaternion(player.quaternion)));
+        camera.lookAt(player.position);
 
         // Gun logic
         gameData.current.gunCooldown = Math.max(0, gameData.current.gunCooldown - delta);
         if (gunOverheat > 0) setGunOverheat(o => Math.max(0, o - delta * 15));
         
-        if (keysPressed['mouse0'] && gameData.current.gunCooldown <= 0 && gunOverheat < 100) {
+        if ((keysPressed['mouse0'] || keysPressed[' ']) && gameData.current.gunCooldown <= 0 && gunOverheat < 100) {
             gameData.current.sounds.shoot?.triggerAttackRelease("C4", "8n");
             
             const bulletPos = player.position.clone().add(new THREE.Vector3(0, 0, 2).applyQuaternion(player.quaternion));
@@ -425,9 +420,11 @@ export default function Game() {
             {gameState === 'menu' && (
                  <div className="absolute inset-0 flex items-center justify-center z-10">
                     <Card className="max-w-md mx-auto bg-card/80 backdrop-blur-sm border-primary/20 shadow-xl text-center">
-                        <CardContent className="p-8">
-                            <h2 className="text-5xl font-bold font-headline text-primary mb-4">Ready for Takeoff?</h2>
-                            <p className="text-muted-foreground mb-6">Use your mouse to steer, W/S for throttle, and Left Click to fire. Survive the incoming waves!</p>
+                        <CardHeader>
+                            <CardTitle className="text-5xl font-bold font-headline text-primary">Ready for Takeoff?</CardTitle>
+                        </CardHeader>
+                        <CardContent className="p-8 pt-0">
+                            <p className="text-muted-foreground mb-6">Use your WASD keys to steer, and Left Click or Space to fire. Survive the incoming waves!</p>
                             <Button size="lg" className="w-full text-lg py-6" onClick={startGame}>
                                 Start Survival Mode
                             </Button>
@@ -443,8 +440,10 @@ export default function Game() {
             {gameState === 'gameover' && (
                 <div className="absolute inset-0 flex items-center justify-center bg-black/50 z-10">
                      <Card className="max-w-md mx-auto bg-card/80 backdrop-blur-sm border-destructive/50 shadow-xl text-center">
-                        <CardContent className="p-8">
-                            <h2 className="text-5xl font-bold font-headline text-destructive mb-4">Game Over</h2>
+                        <CardHeader>
+                            <CardTitle className="text-5xl font-bold font-headline text-destructive">Game Over</CardTitle>
+                        </CardHeader>
+                        <CardContent className="p-8 pt-0">
                             <p className="text-foreground mb-2">You survived to <span className="font-bold text-accent">Wave {wave}</span></p>
                             <p className="text-foreground mb-6">Final Score: <span className="font-bold text-accent">{score}</span></p>
                             <Button size="lg" className="w-full text-lg py-6" onClick={startGame}>
