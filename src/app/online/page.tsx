@@ -8,7 +8,7 @@ import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle }
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Separator } from '@/components/ui/separator';
-import { ArrowLeft, Copy, Users, Globe, Server as ServerIcon, User } from 'lucide-react';
+import { ArrowLeft, Copy, Users, Globe, Server as ServerIcon, User, Loader2 } from 'lucide-react';
 import { useToast } from "@/hooks/use-toast";
 import {
   Table,
@@ -19,6 +19,10 @@ import {
   TableCell,
 } from '@/components/ui/table';
 
+import { db } from '@/lib/firebase';
+import { collection, query, onSnapshot, doc, addDoc, deleteDoc, runTransaction, getDocs, writeBatch, serverTimestamp, orderBy } from 'firebase/firestore';
+
+
 type Server = {
   id: string;
   name: string;
@@ -27,32 +31,93 @@ type Server = {
   maxPlayers: number;
 };
 
-// Mock data for public servers
-const mockServers: Server[] = [
-  { id: 'us-east-1', name: 'Voxel Skies - East US', region: 'East US', players: 12, maxPlayers: 24 },
-  { id: 'eu-west-1', name: 'Aces High - Europe', region: 'Europe', players: 20, maxPlayers: 24 },
-  { id: 'asia-se-1', name: 'Dogfight Arena - Asia', region: 'Asia', players: 8, maxPlayers: 24 },
-  { id: 'sa-east-1', name: 'G-Force Giants - South America', region: 'S. America', players: 5, maxPlayers: 24 },
+type LobbyPlayer = {
+  id: string;
+  name: string;
+};
+
+const initialServers: Omit<Server, 'id' | 'players'>[] = [
+  { name: 'Voxel Skies - East US', region: 'East US', maxPlayers: 24 },
+  { name: 'Aces High - Europe', region: 'Europe', maxPlayers: 24 },
+  { name: 'Dogfight Arena - Asia', region: 'Asia', maxPlayers: 24 },
+  { name: 'G-Force Giants - South America', region: 'S. America', maxPlayers: 24 },
 ];
+
+async function seedServers() {
+  const serversCollection = collection(db, 'servers');
+  const snapshot = await getDocs(serversCollection);
+  if (snapshot.empty) {
+    console.log('No servers found, seeding initial data...');
+    const batch = writeBatch(db);
+    initialServers.forEach(serverData => {
+      const serverRef = doc(serversCollection);
+      batch.set(serverRef, { ...serverData, players: 0 });
+    });
+    await batch.commit();
+    console.log('Seeding complete.');
+  }
+}
 
 function OnlinePageContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const [playerName, setPlayerName] = useState('');
+  const [servers, setServers] = useState<Server[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
   const [joinedServer, setJoinedServer] = useState<Server | null>(null);
+  const [playersInLobby, setPlayersInLobby] = useState<LobbyPlayer[]>([]);
+  const [playerDocId, setPlayerDocId] = useState<string | null>(null);
   const { toast } = useToast();
 
   useEffect(() => {
+    seedServers();
+    const q = query(collection(db, 'servers'));
+    const unsubscribe = onSnapshot(q, (querySnapshot) => {
+      const serversData: Server[] = [];
+      querySnapshot.forEach((doc) => {
+        serversData.push({ id: doc.id, ...doc.data() } as Server);
+      });
+      setServers(serversData);
+      setIsLoading(false);
+    }, (error) => {
+      console.error("Error fetching servers:", error);
+      toast({
+        title: "Error",
+        description: "Could not connect to the game servers. Please check your Firebase setup.",
+        variant: "destructive",
+      });
+      setIsLoading(false);
+    });
+
+    return () => unsubscribe();
+  }, [toast]);
+
+  useEffect(() => {
+    if (!joinedServer) return;
+
+    const playersQuery = query(collection(db, `servers/${joinedServer.id}/players`), orderBy('joinedAt', 'asc'));
+    const unsubscribe = onSnapshot(playersQuery, (snapshot) => {
+      const playersData: LobbyPlayer[] = [];
+      snapshot.forEach(doc => {
+        playersData.push({ id: doc.id, name: doc.data().name });
+      });
+      setPlayersInLobby(playersData);
+    });
+
+    return () => unsubscribe();
+  }, [joinedServer]);
+
+  useEffect(() => {
     const serverId = searchParams.get('server');
-    if (serverId) {
-      const serverToJoin = mockServers.find(s => s.id === serverId);
-      if (serverToJoin) {
-        setJoinedServer(serverToJoin);
+    if (serverId && servers.length > 0) {
+      const serverToJoin = servers.find(s => s.id === serverId);
+      if (serverToJoin && !joinedServer) {
+        handleJoinServer(serverToJoin);
       }
     }
-  }, [searchParams]);
-  
-  const handleJoinServer = (server: Server) => {
+  }, [searchParams, servers]);
+
+  const handleJoinServer = async (server: Server) => {
     if (!playerName) {
       toast({
         title: "Enter your callsign!",
@@ -61,14 +126,59 @@ function OnlinePageContent() {
       });
       return;
     }
+
     setJoinedServer(server);
+    const serverRef = doc(db, 'servers', server.id);
+    const playersRef = collection(db, `servers/${server.id}/players`);
+
+    try {
+      const playerDocRef = await addDoc(playersRef, {
+        name: playerName,
+        joinedAt: serverTimestamp(),
+      });
+      setPlayerDocId(playerDocRef.id);
+      
+      await runTransaction(db, async (transaction) => {
+        const serverDoc = await transaction.get(serverRef);
+        if (!serverDoc.exists()) {
+          throw "Server does not exist!";
+        }
+        const newPlayerCount = (serverDoc.data().players || 0) + 1;
+        transaction.update(serverRef, { players: newPlayerCount });
+      });
+
+    } catch (e) {
+      console.error("Error joining server: ", e);
+      toast({ title: "Error", description: "Could not join the server.", variant: "destructive" });
+      setJoinedServer(null);
+    }
   };
-  
-  const handleLeaveServer = () => {
+
+  const handleLeaveServer = async () => {
+    if (!joinedServer || !playerDocId) return;
+
+    const serverRef = doc(db, 'servers', joinedServer.id);
+    const playerDocRef = doc(db, `servers/${joinedServer.id}/players`, playerDocId);
+    
     setJoinedServer(null);
+    setPlayerDocId(null);
+    setPlayersInLobby([]);
     router.push('/online'); // Clear query params
+
+    try {
+      await deleteDoc(playerDocRef);
+      await runTransaction(db, async (transaction) => {
+        const serverDoc = await transaction.get(serverRef);
+        if (serverDoc.exists()) {
+          const newPlayerCount = Math.max(0, (serverDoc.data().players || 1) - 1);
+          transaction.update(serverRef, { players: newPlayerCount });
+        }
+      });
+    } catch (e) {
+      console.error("Error leaving server: ", e);
+    }
   };
-  
+
   const copyInviteLink = () => {
     if (joinedServer) {
       const inviteLink = `${window.location.origin}/online?server=${joinedServer.id}`;
@@ -79,6 +189,15 @@ function OnlinePageContent() {
       });
     }
   };
+  
+  if (isLoading) {
+    return (
+      <div className="flex items-center justify-center gap-2 text-primary text-xl">
+        <Loader2 className="h-6 w-6 animate-spin" />
+        Loading Servers...
+      </div>
+    );
+  }
 
   if (joinedServer) {
     // In-Server Lobby View
@@ -94,7 +213,7 @@ function OnlinePageContent() {
           <CardContent className="space-y-6">
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                 <div>
-                    <h3 className="font-semibold text-lg mb-2">Players in Lobby</h3>
+                    <h3 className="font-semibold text-lg mb-2">Players in Lobby ({playersInLobby.length}/{joinedServer.maxPlayers})</h3>
                      <div className="max-h-60 overflow-y-auto rounded-md border">
                         <Table>
                             <TableHeader>
@@ -103,12 +222,11 @@ function OnlinePageContent() {
                                 </TableRow>
                             </TableHeader>
                             <TableBody>
-                                <TableRow className="bg-accent/20">
-                                    <TableCell className="font-medium flex items-center gap-2"><User className="h-4 w-4"/>{playerName || 'Maverick'} (You)</TableCell>
-                                </TableRow>
-                                <TableRow><TableCell className="flex items-center gap-2"><User className="h-4 w-4"/>RedBaron</TableCell></TableRow>
-                                <TableRow><TableCell className="flex items-center gap-2"><User className="h-4 w-4"/>SkyRider</TableCell></TableRow>
-                                <TableRow><TableCell className="flex items-center gap-2"><User className="h-4 w-4"/>VoxelViper</TableCell></TableRow>
+                                {playersInLobby.map(player => (
+                                  <TableRow key={player.id} className={player.name === playerName ? "bg-accent/20" : ""}>
+                                      <TableCell className="font-medium flex items-center gap-2"><User className="h-4 w-4"/>{player.name} {player.name === playerName ? '(You)' : ''}</TableCell>
+                                  </TableRow>
+                                ))}
                             </TableBody>
                         </Table>
                     </div>
@@ -118,7 +236,7 @@ function OnlinePageContent() {
                     <p className="text-sm text-muted-foreground">Share this link with your friends to have them join this server directly.</p>
                      <div className="p-3 bg-muted rounded-md flex items-center justify-between">
                         <p className="text-sm font-mono truncate">
-                           {typeof window !== 'undefined' ? `${window.location.origin.replace('https://', '')}/online?server=${joinedServer.id}` : ''}
+                           {typeof window !== 'undefined' ? `${window.location.origin.replace(/https?:\/\//, '')}/online?server=${joinedServer.id}` : ''}
                         </p>
                         <Button variant="ghost" size="icon" onClick={copyInviteLink}>
                             <Copy className="h-4 w-4" />
@@ -169,7 +287,7 @@ function OnlinePageContent() {
       </Card>
       
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-        {mockServers.map((server) => (
+        {servers.map((server) => (
           <Card key={server.id}>
             <CardHeader>
               <CardTitle className="flex items-center gap-2"><ServerIcon className="text-primary"/>{server.name}</CardTitle>
@@ -180,8 +298,8 @@ function OnlinePageContent() {
               </CardDescription>
             </CardHeader>
             <CardFooter>
-              <Button className="w-full" onClick={() => handleJoinServer(server)}>
-                Join Server
+              <Button className="w-full" onClick={() => handleJoinServer(server)} disabled={server.players >= server.maxPlayers}>
+                {server.players >= server.maxPlayers ? 'Server Full' : 'Join Server'}
               </Button>
             </CardFooter>
           </Card>
@@ -205,7 +323,7 @@ function OnlinePageContent() {
 export default function OnlinePage() {
   return (
     <main className="flex min-h-screen flex-col items-center justify-center p-8 sm:p-24 bg-background">
-      <Suspense fallback={<div className="text-primary text-xl">Loading Servers...</div>}>
+      <Suspense fallback={<div className="text-primary text-xl">Loading...</div>}>
         <OnlinePageContent />
       </Suspense>
     </main>
