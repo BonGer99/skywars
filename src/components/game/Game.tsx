@@ -19,8 +19,12 @@ export default function Game() {
     const [playerHealth, setPlayerHealth] = useState(100);
     const [gunOverheat, setGunOverheat] = useState(0);
     const [altitude, setAltitude] = useState(0);
+    const [showAltitudeWarning, setShowAltitudeWarning] = useState(false);
+    const [altitudeWarningTimer, setAltitudeWarningTimer] = useState(5);
     
     const gameStateRef = useRef(gameState);
+    const altitudeWarningTimerRef = useRef(5);
+
     useEffect(() => {
       gameStateRef.current = gameState;
     }, [gameState]);
@@ -80,7 +84,7 @@ export default function Game() {
         directionalLight.position.set(5, 10, 7.5);
         scene.add(directionalLight);
 
-        const groundGeo = new THREE.PlaneGeometry(4000, 4000);
+        const groundGeo = new THREE.PlaneGeometry(2000, 2000);
         const groundMat = new THREE.MeshLambertMaterial({ color: 0x4A6B3A, flatShading: true });
         const ground = new THREE.Mesh(groundGeo, groundMat);
         ground.rotation.x = -Math.PI / 2;
@@ -88,15 +92,15 @@ export default function Game() {
         scene.add(ground);
 
         // Add lakes
-        for (let i = 0; i < 8; i++) {
-            const lakeGeo = new THREE.PlaneGeometry(Math.random() * 250 + 50, Math.random() * 250 + 50);
+        for (let i = 0; i < 4; i++) {
+            const lakeGeo = new THREE.PlaneGeometry(Math.random() * 150 + 50, Math.random() * 150 + 50);
             const lakeMat = new THREE.MeshLambertMaterial({ color: 0x3d85c6, flatShading: true });
             const lake = new THREE.Mesh(lakeGeo, lakeMat);
             lake.rotation.x = -Math.PI / 2;
             lake.position.set(
-                (Math.random() - 0.5) * 3800,
+                (Math.random() - 0.5) * 1900,
                 -49.9,
-                (Math.random() - 0.5) * 3800
+                (Math.random() - 0.5) * 1900
             );
             scene.add(lake);
         }
@@ -130,22 +134,33 @@ export default function Game() {
             scene.add(bush);
         };
 
-        for (let i = 0; i < 150; i++) {
-            const x = (Math.random() - 0.5) * 3800;
-            const z = (Math.random() - 0.5) * 3800;
+        for (let i = 0; i < 75; i++) {
+            const x = (Math.random() - 0.5) * 1900;
+            const z = (Math.random() - 0.5) * 1900;
             if (Math.random() > 0.4) {
                 createTree(x, z);
             } else {
                 createBush(x, z);
             }
         }
-
-        for(let i = 0; i < 20; i++) {
-            const cloudMat = new THREE.MeshBasicMaterial({ color: 0xffffff });
-            const cloud = new THREE.Mesh(new THREE.BoxGeometry(30, 10, 10), cloudMat);
-            cloud.position.set((Math.random() - 0.5) * 4000, Math.random() * 200 + 80, (Math.random() - 0.5) * 4000);
-            scene.add(cloud);
+        
+        const cloudLayer = new THREE.Group();
+        for(let i = 0; i < 150; i++) {
+            const cloudMat = new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.8 });
+            const cloud = new THREE.Mesh(new THREE.BoxGeometry(
+                Math.random() * 80 + 40, 
+                Math.random() * 20 + 10, 
+                Math.random() * 80 + 40
+            ), cloudMat);
+            cloud.position.set(
+                (Math.random() - 0.5) * 2000, 
+                200 + (Math.random() - 0.5) * 20,
+                (Math.random() - 0.5) * 2000
+            );
+            cloudLayer.add(cloud);
         }
+        scene.add(cloudLayer);
+
 
         const keysPressed: Record<string, boolean> = {};
         const bullets: { mesh: THREE.Mesh, velocity: THREE.Vector3 }[] = [];
@@ -164,6 +179,9 @@ export default function Game() {
             setScore(0);
             setWave(1);
             setAltitude(player.position.y - ground.position.y);
+            setShowAltitudeWarning(false);
+            setAltitudeWarningTimer(5);
+            altitudeWarningTimerRef.current = 5;
         };
         
         let lastTime = 0;
@@ -208,6 +226,24 @@ export default function Game() {
                         }
                         return 0;
                     });
+                }
+
+                if (player.position.y > 220) {
+                    setShowAltitudeWarning(true);
+                    altitudeWarningTimerRef.current -= delta;
+                    setAltitudeWarningTimer(Math.max(0, altitudeWarningTimerRef.current));
+                    if (altitudeWarningTimerRef.current <= 0) {
+                        setPlayerHealth(h => {
+                            if (h > 0) {
+                               setGameState('gameover');
+                            }
+                            return 0;
+                        });
+                    }
+                } else {
+                    setShowAltitudeWarning(false);
+                    altitudeWarningTimerRef.current = 5;
+                    setAltitudeWarningTimer(5);
                 }
 
                 gunCooldown = Math.max(0, gunCooldown - delta);
@@ -313,6 +349,20 @@ export default function Game() {
                         <CardContent className="p-8 pt-0">
                             <p className="text-muted-foreground mb-6">Use WASD to steer, Shift for boost, and Left Click or Space to fire. Good luck!</p>
                             <Button size="lg" className="w-full text-lg py-6" onClick={startGame}>Start Flight</Button>
+                        </CardContent>
+                    </Card>
+                </div>
+            )}
+
+            {showAltitudeWarning && (
+                <div className="absolute top-1/3 left-1/2 -translate-x-1/2 z-20 text-center">
+                    <Card className="bg-destructive/80 text-destructive-foreground p-4 border-2 border-destructive-foreground">
+                        <CardTitle className="text-3xl font-bold">WARNING: ALTITUDE CRITICAL</CardTitle>
+                        <CardContent className="p-2 pt-2">
+                            <p className="text-lg">Descend below 220m immediately!</p>
+                            <p className="text-5xl font-mono font-bold mt-2">
+                                {altitudeWarningTimer.toFixed(1)}
+                            </p>
                         </CardContent>
                     </Card>
                 </div>
