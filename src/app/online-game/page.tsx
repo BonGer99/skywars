@@ -8,16 +8,16 @@ function OnlineGame() {
   const searchParams = useSearchParams();
   const router = useRouter();
   const serverId = searchParams.get('server');
-  const playerId = searchParams.get('player');
+  const playerName = searchParams.get('playerName');
 
   useEffect(() => {
-    if (!serverId || !playerId) {
+    if (!serverId || !playerName) {
       // If params are missing, redirect to online lobby
       router.replace('/online');
     }
-  }, [serverId, playerId, router]);
+  }, [serverId, playerName, router]);
 
-  if (!serverId || !playerId) {
+  if (!serverId || !playerName) {
     return (
       <div className="flex items-center justify-center min-h-screen text-primary text-xl">
         <Loader2 className="mr-2 h-6 w-6 animate-spin" />
@@ -26,7 +26,7 @@ function OnlineGame() {
     );
   }
 
-  return <Game mode="online" serverId={serverId} playerId={playerId} />;
+  return <Game mode="online" serverId={serverId} playerName={playerName} />;
 }
 
 

@@ -12,7 +12,7 @@ import { ArrowLeft, Loader2, Users } from 'lucide-react';
 import { useToast } from "@/hooks/use-toast";
 
 import { db } from '@/lib/firebase';
-import { collection, query, onSnapshot, doc, getDoc, setDoc, addDoc, runTransaction, serverTimestamp } from 'firebase/firestore';
+import { collection, query, onSnapshot, doc, getDoc, setDoc } from 'firebase/firestore';
 
 type Server = {
   id: string;
@@ -41,7 +41,7 @@ async function seedServers() {
         console.log('Server check complete.');
     } catch (error) {
         console.error("Error seeding servers: ", error);
-        throw error; // Rethrow to be caught by the caller
+        throw error;
     }
 }
 
@@ -50,7 +50,7 @@ function OnlinePageContent() {
   const router = useRouter();
   const [servers, setServers] = useState<Server[]>([]);
   const [playerName, setPlayerName] = useState('');
-  const [isJoining, setIsJoining] = useState<string | null>(null); // Store server ID being joined
+  const [isJoining, setIsJoining] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const { toast } = useToast();
@@ -113,34 +113,10 @@ function OnlinePageContent() {
 
     setIsJoining(server.id);
 
-    try {
-      const serverRef = doc(db, 'servers', server.id);
-      
-      const playerDocRef = await addDoc(collection(db, `servers/${server.id}/players`), {
-        name: playerName,
-        joinedAt: serverTimestamp(),
-        kills: 0,
-        health: 100,
-        position: { x: (Math.random() - 0.5) * 500, y: 50, z: (Math.random() - 0.5) * 500 },
-        quaternion: { x: 0, y: 0, z: 0, w: 1 },
-      });
-      
-      await runTransaction(db, async (transaction) => {
-        const freshServerDoc = await transaction.get(serverRef);
-        if (!freshServerDoc.exists()) {
-          throw "Server does not exist!";
-        }
-        const newPlayerCount = (freshServerDoc.data().players || 0) + 1;
-        transaction.update(serverRef, { players: newPlayerCount });
-      });
-
-      router.push(`/online-game?server=${server.id}&player=${playerDocRef.id}`);
-
-    } catch (e) {
-      console.error("Error joining server: ", e);
-      toast({ title: "Error", description: "Could not join the server. Please try again.", variant: "destructive" });
-      setIsJoining(null);
-    }
+    // We no longer create the player document here.
+    // We just navigate to the game page with the server and player name.
+    // The Game component itself will handle creating the player in the database.
+    router.push(`/online-game?server=${server.id}&playerName=${encodeURIComponent(playerName)}`);
   };
 
   return (

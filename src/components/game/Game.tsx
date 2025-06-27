@@ -13,7 +13,7 @@ import { AlertDialog, AlertDialogTrigger, AlertDialogContent, AlertDialogHeader,
 import { Input } from '@/components/ui/input';
 import { useToast } from "@/hooks/use-toast";
 import { db } from '@/lib/firebase';
-import { doc, runTransaction, deleteDoc, collection, onSnapshot, updateDoc, writeBatch } from 'firebase/firestore';
+import { doc, runTransaction, deleteDoc, collection, onSnapshot, updateDoc, writeBatch, addDoc, serverTimestamp, setDoc } from 'firebase/firestore';
 
 
 type GameState = 'loading' | 'menu' | 'playing' | 'gameover';
@@ -22,13 +22,13 @@ type GameMode = 'offline' | 'online';
 interface GameProps {
   mode: GameMode;
   serverId?: string;
-  playerId?: string;
+  playerName?: string;
 }
 
 type Bullet = {
     mesh: THREE.Mesh;
     velocity: THREE.Vector3;
-    ownerId: string; // Keep track of who shot the bullet in online mode
+    ownerId: string;
 };
 
 type Enemy = {
@@ -46,10 +46,13 @@ type OtherPlayer = {
     health: number;
 };
 
-export default function Game({ mode, serverId, playerId }: GameProps) {
+export default function Game({ mode, serverId: serverIdProp, playerName: playerNameProp }: GameProps) {
     const mountRef = useRef<HTMLDivElement>(null);
     const router = useRouter();
     const { toast } = useToast();
+
+    // Player ID is now internal state, set after joining a server.
+    const [playerId, setPlayerId] = useState<string | null>(null);
 
     const [gameState, setGameState] = useState<GameState>('loading');
     const [score, setScore] = useState(0);
@@ -68,10 +71,9 @@ export default function Game({ mode, serverId, playerId }: GameProps) {
     const altitudeWarningTimerRef = useRef(5);
     const boundaryWarningTimerRef = useRef(7);
     const playerBulletsRef = useRef<Bullet[]>([]);
-    const enemyBulletsRef = useRef<Bullet[]>([]); // Only used for offline AI
-    const enemiesRef = useRef<Enemy[]>([]); // Only used for offline AI
+    const enemyBulletsRef = useRef<Enemy[]>([]);
+    const enemiesRef = useRef<Enemy[]>([]);
     
-    // Multiplayer refs
     const otherPlayersRef = useRef<Record<string, OtherPlayer>>({});
     const lastUpdateTimeRef = useRef(0);
 
@@ -86,17 +88,84 @@ export default function Game({ mode, serverId, playerId }: GameProps) {
         waveRef.current = wave;
     }, [wave]);
 
+    // This effect handles joining the game and cleaning up on unmount for ONLINE mode.
+    useEffect(() => {
+        if (mode !== 'online' || !serverIdProp || !playerNameProp) {
+            if (mode === 'offline') setGameState('menu');
+            return;
+        }
+
+        let isMounted = true;
+        let createdPlayerId: string | null = null;
+        const serverRef = doc(db, 'servers', serverIdProp);
+
+        const joinGame = async () => {
+            try {
+                // 1. Create the player document
+                const playerDocRef = await addDoc(collection(db, `servers/${serverIdProp}/players`), {
+                    name: playerNameProp,
+                    joinedAt: serverTimestamp(),
+                    kills: 0,
+                    health: 100,
+                    position: { x: (Math.random() - 0.5) * 500, y: 50, z: (Math.random() - 0.5) * 500 },
+                    quaternion: { x: 0, y: 0, z: 0, w: 1 },
+                });
+                
+                createdPlayerId = playerDocRef.id;
+
+                // 2. Update server player count
+                await runTransaction(db, async (transaction) => {
+                    const freshServerDoc = await transaction.get(serverRef);
+                    if (!freshServerDoc.exists()) throw "Server does not exist!";
+                    const newPlayerCount = (freshServerDoc.data().players || 0) + 1;
+                    transaction.update(serverRef, { players: newPlayerCount });
+                });
+
+                if (isMounted) {
+                    setPlayerId(createdPlayerId);
+                    setGameState('playing');
+                }
+
+            } catch (error) {
+                console.error("Failed to join game:", error);
+                toast({ title: "Error", description: "Could not join the game server.", variant: "destructive" });
+                router.push('/online');
+            }
+        };
+
+        joinGame();
+
+        // Cleanup function: runs when the component unmounts
+        return () => {
+            isMounted = false;
+            if (createdPlayerId) {
+                const playerDocRef = doc(db, 'servers', serverIdProp, 'players', createdPlayerId);
+                runTransaction(db, async (transaction) => {
+                    const serverDoc = await transaction.get(serverRef);
+                    if (serverDoc.exists()) {
+                        const newPlayerCount = Math.max(0, (serverDoc.data().players || 1) - 1);
+                        transaction.update(serverRef, { players: newPlayerCount });
+                    }
+                    transaction.delete(playerDocRef);
+                }).catch(e => console.error("Error during cleanup:", e));
+            }
+        };
+
+    }, [mode, serverIdProp, playerNameProp, router, toast]);
+
     const startGame = useCallback(async () => {
-        if (mode === 'online' && serverId && playerId) {
-            const playerDocRef = doc(db, 'servers', serverId, 'players', playerId);
+        if (mode === 'online' && serverIdProp && playerId) {
+            const playerDocRef = doc(db, 'servers', serverIdProp, 'players', playerId);
             const randomPos = { x: (Math.random() - 0.5) * 800, y: 50, z: (Math.random() - 0.5) * 800 };
             try {
-                await updateDoc(playerDocRef, {
+                // Use setDoc with merge to be safer, in case the doc was removed.
+                await setDoc(playerDocRef, {
                     health: 100,
                     kills: 0,
                     position: randomPos,
                     quaternion: { x: 0, y: 0, z: 0, w: 1 },
-                });
+                }, { merge: true });
+
                 if (playerRef.current) {
                     playerRef.current.position.set(randomPos.x, randomPos.y, randomPos.z);
                     playerRef.current.quaternion.set(0,0,0,1);
@@ -108,33 +177,17 @@ export default function Game({ mode, serverId, playerId }: GameProps) {
         }
         setGameState('playing');
         resetGame();
-    }, [mode, serverId, playerId, toast]);
+    }, [mode, serverIdProp, playerId, toast]);
 
 
-    const handleLeaveGame = useCallback(async () => {
-        if (mode === 'online' && serverId && playerId) {
-            const serverRef = doc(db, 'servers', serverId);
-            const playerDocRef = doc(db, 'servers', serverId, 'players', playerId);
-            try {
-                // Use a transaction to ensure atomicity
-                await runTransaction(db, async (transaction) => {
-                    const serverDoc = await transaction.get(serverRef);
-                    if (serverDoc.exists()) {
-                        const newPlayerCount = Math.max(0, (serverDoc.data().players || 1) - 1);
-                        transaction.update(serverRef, { players: newPlayerCount });
-                    }
-                    transaction.delete(playerDocRef);
-                });
-            } catch (error) {
-                console.error("Error leaving server:", error);
-                // Don't toast here as the user is navigating away
-            }
-        }
+    const handleLeaveGame = useCallback(() => {
+        // The useEffect cleanup now handles database changes.
+        // We just need to navigate away.
         router.push('/');
-    }, [mode, serverId, playerId, router]);
+    }, [router]);
 
     const copyInviteLink = () => {
-        if (serverId) {
+        if (serverIdProp) {
             const inviteLink = `${window.location.origin}/online`;
             navigator.clipboard.writeText(inviteLink);
             toast({
@@ -203,7 +256,7 @@ export default function Game({ mode, serverId, playerId }: GameProps) {
         };
         
         mount.appendChild(renderer.domElement);
-        handleResize(); // Initial resize call
+        handleResize();
 
         const createVoxelPlane = (color: THREE.Color) => {
             const plane = new THREE.Group();
@@ -318,7 +371,6 @@ export default function Game({ mode, serverId, playerId }: GameProps) {
         
         let lastGameState = gameStateRef.current;
         
-        // --- OFFLINE/AI LOGIC ---
         const spawnEnemy = async () => {
             if (!sceneRef.current || !playerRef.current) return;
             try {
@@ -353,7 +405,7 @@ export default function Game({ mode, serverId, playerId }: GameProps) {
         };
 
         const startNewWave = (waveNumber: number) => {
-            setScore(s => s + (waveRef.current - 1) * 100); // Wave bonus
+            setScore(s => s + (waveRef.current - 1) * 100);
             setTimeout(async () => {
                 if(gameStateRef.current !== 'playing') return;
                 for (let i = 0; i < waveNumber; i++) {
@@ -361,50 +413,6 @@ export default function Game({ mode, serverId, playerId }: GameProps) {
                 }
             }, 2500);
         };
-        
-        
-        let unsubFirestore: (() => void) | null = null;
-        if (mode === 'online' && serverId && playerId) {
-            const playersCollection = collection(db, 'servers', serverId, 'players');
-            unsubFirestore = onSnapshot(playersCollection, (snapshot) => {
-                if (!sceneRef.current) return;
-                const scene = sceneRef.current;
-
-                snapshot.docChanges().forEach((change) => {
-                    const data = change.doc.data();
-                    const id = change.doc.id;
-
-                    if (id === playerId) { // It's me
-                        if (data.health < playerHealth) setPlayerHealth(data.health);
-                        if (data.health <= 0 && gameStateRef.current === 'playing') setGameState('gameover');
-                        if (data.kills !== score) setScore(data.kills);
-                        return;
-                    }
-
-                    const playerMesh = otherPlayersRef.current[id]?.mesh;
-
-                    if (change.type === 'added') {
-                        if (!playerMesh) {
-                            const newPlayerPlane = createVoxelPlane(new THREE.Color(0xffaa00));
-                            if (data.position) newPlayerPlane.position.set(data.position.x, data.position.y, data.position.z);
-                            scene.add(newPlayerPlane);
-                            otherPlayersRef.current[id] = { mesh: newPlayerPlane, name: data.name, health: data.health };
-                        }
-                    } else if (change.type === 'modified') {
-                        if (playerMesh) {
-                            if(data.position) playerMesh.position.lerp(new THREE.Vector3(data.position.x, data.position.y, data.position.z), 0.3);
-                            if(data.quaternion) playerMesh.quaternion.slerp(new THREE.Quaternion(data.quaternion.x, data.quaternion.y, data.quaternion.z, data.quaternion.w), 0.3);
-                            otherPlayersRef.current[id].health = data.health;
-                        }
-                    } else if (change.type === 'removed') {
-                        if (playerMesh) {
-                            scene.remove(playerMesh);
-                            delete otherPlayersRef.current[id];
-                        }
-                    }
-                });
-            });
-        }
         
         let lastTime = 0;
         const gameLoop = (time: number) => {
@@ -440,17 +448,17 @@ export default function Game({ mode, serverId, playerId }: GameProps) {
                 const forward = new THREE.Vector3(0, 0, -1).applyQuaternion(playerRef.current.quaternion);
                 playerRef.current.position.add(forward.multiplyScalar(currentSpeed * delta));
                 
-                // --- Online: Send player state to Firestore ---
-                if (mode === 'online' && playerId && serverId && playerRef.current) {
+                if (mode === 'online' && playerId && serverIdProp && playerRef.current) {
                     const now = performance.now();
-                    if(now - lastUpdateTimeRef.current > 100) { // 10 times per second
+                    if(now - lastUpdateTimeRef.current > 100) {
                         lastUpdateTimeRef.current = now;
                         const pos = playerRef.current.position;
                         const quat = playerRef.current.quaternion;
-                        updateDoc(doc(db, 'servers', serverId, 'players', playerId), {
+                        // Use setDoc with merge to prevent "No document to update" error
+                        setDoc(doc(db, 'servers', serverIdProp, 'players', playerId), {
                            position: { x: pos.x, y: pos.y, z: pos.z },
                            quaternion: { x: quat.x, y: quat.y, z: quat.z, w: quat.w },
-                        }).catch(console.error);
+                        }, { merge: true }).catch(console.error);
                     }
                 }
 
@@ -517,12 +525,10 @@ export default function Game({ mode, serverId, playerId }: GameProps) {
                     }
                 }
                 
-                // --- AI LOGIC (OFFLINE ONLY) ---
                 if (mode === 'offline') {
                     for (let i = enemiesRef.current.length - 1; i >= 0; i--) {
                         const enemy = enemiesRef.current[i];
                         if (!playerRef.current) continue;
-                        // ... (existing AI logic here, unchanged)
                         const targetPosition = playerRef.current.position.clone();
                         const targetQuaternion = new THREE.Quaternion().setFromRotationMatrix(new THREE.Matrix4().lookAt(enemy.mesh.position, targetPosition, enemy.mesh.up));
                         enemy.mesh.quaternion.slerp(targetQuaternion, 0.02);
@@ -531,13 +537,11 @@ export default function Game({ mode, serverId, playerId }: GameProps) {
                         enemy.gunCooldown -= delta;
                         if(enemy.gunCooldown <=0) {
                              enemy.gunCooldown = 2.0;
-                             // spawn bullet
                         }
                     }
                 }
             }
 
-            // Update and check collisions for player bullets
             for (let i = playerBulletsRef.current.length - 1; i >= 0; i--) {
                 const b = playerBulletsRef.current[i];
                 b.mesh.position.add(b.velocity.clone().multiplyScalar(delta));
@@ -562,25 +566,25 @@ export default function Game({ mode, serverId, playerId }: GameProps) {
                             break;
                         }
                     }
-                } else if (mode === 'online' && serverId && playerId) { // Online mode collision
+                } else if (mode === 'online' && serverIdProp && playerId) {
                     for (const otherPlayerId in otherPlayersRef.current) {
-                        if(otherPlayerId === b.ownerId) continue; // Don't shoot yourself
+                        if(otherPlayerId === b.ownerId) continue;
                         
                         const otherPlayer = otherPlayersRef.current[otherPlayerId];
                          if (b.mesh.position.distanceTo(otherPlayer.mesh.position) < 5 && otherPlayer.health > 0) {
                             hit = true;
                             
                             runTransaction(db, async (transaction) => {
-                                const shooterPlayerDocRef = doc(db, 'servers', serverId, 'players', b.ownerId);
-                                const targetPlayerDocRef = doc(db, 'servers', serverId, 'players', otherPlayerId);
+                                const shooterPlayerDocRef = doc(db, 'servers', serverIdProp, 'players', b.ownerId);
+                                const targetPlayerDocRef = doc(db, 'servers', serverIdProp, 'players', otherPlayerId);
                                 
                                 const targetPlayerDoc = await transaction.get(targetPlayerDocRef);
-                                if (!targetPlayerDoc.exists()) throw `Player ${otherPlayerId} not found!`;
+                                if (!targetPlayerDoc.exists()) return;
 
                                 const newHealth = Math.max(0, (targetPlayerDoc.data().health || 0) - 10);
                                 transaction.update(targetPlayerDocRef, { health: newHealth });
                                 
-                                if (newHealth <= 0 && targetPlayerDoc.data().health > 0) { // check previous health to prevent multiple kill credits
+                                if (newHealth <= 0 && targetPlayerDoc.data().health > 0) {
                                     const shooterPlayerDoc = await transaction.get(shooterPlayerDocRef);
                                     if(shooterPlayerDoc.exists()) {
                                         const myKills = (shooterPlayerDoc.data().kills || 0) + 1;
@@ -589,7 +593,7 @@ export default function Game({ mode, serverId, playerId }: GameProps) {
                                 }
                             }).catch(e => console.error("Hit transaction failed: ", e));
                             
-                            break; // Bullet is used up
+                            break;
                         }
                     }
                 }
@@ -600,7 +604,6 @@ export default function Game({ mode, serverId, playerId }: GameProps) {
                 }
             }
 
-            // Update and check collisions for enemy bullets (OFFLINE ONLY)
             if (mode === 'offline') {
                 for (let i = enemyBulletsRef.current.length - 1; i >= 0; i--) {
                     const b = enemyBulletsRef.current[i];
@@ -635,49 +638,86 @@ export default function Game({ mode, serverId, playerId }: GameProps) {
         const handleKeyUp = (e: KeyboardEvent) => { keysPressed[e.key.toLowerCase()] = false; };
         const handleMouseDown = (e: MouseEvent) => { if(e.button === 0) keysPressed['mouse0'] = true; };
         const handleMouseUp = (e: MouseEvent) => { if(e.button === 0) keysPressed['mouse0'] = false; };
-        const handleBeforeUnload = (e: BeforeUnloadEvent) => { 
-            if(mode === 'online' && playerId && serverId) {
-                // This is often blocked by browsers, but it's a good faith effort
-                handleLeaveGame();
-            }
-        };
-
+        
         window.addEventListener('keydown', handleKeyDown);
         window.addEventListener('keyup', handleKeyUp);
         window.addEventListener('mousedown', handleMouseDown);
         window.addEventListener('mouseup', handleMouseUp);
         window.addEventListener('resize', handleResize);
-        window.addEventListener('beforeunload', handleBeforeUnload);
-
         
-        setGameState(mode === 'offline' ? 'menu' : 'playing');
         if(mode === 'offline') resetGame();
         
         gameLoop(performance.now());
 
         return () => {
             cancelAnimationFrame(animationFrameId);
-            if (unsubFirestore) unsubFirestore();
             window.removeEventListener('keydown', handleKeyDown);
             window.removeEventListener('keyup', handleKeyUp);
             window.removeEventListener('mousedown', handleMouseDown);
             window.removeEventListener('mouseup', handleMouseUp);
             window.removeEventListener('resize', handleResize);
-            window.removeEventListener('beforeunload', handleBeforeUnload);
             if(mountRef.current && renderer.domElement) {
                 mountRef.current.removeChild(renderer.domElement);
             }
             renderer.dispose();
             
-            // Clean up scene objects
             Object.values(otherPlayersRef.current).forEach(p => scene.remove(p.mesh));
             otherPlayersRef.current = {};
             playerBulletsRef.current.forEach(b => scene.remove(b.mesh));
             playerBulletsRef.current = [];
         };
-    }, [mode, serverId, playerId, router, toast, handleLeaveGame, startGame]);
+    }, [mode, startGame]);
 
-    const inviteLink = serverId ? `${typeof window !== 'undefined' ? window.location.origin : ''}/online` : '';
+    // This effect sets up the Firestore listener for player data.
+    // It depends on `playerId` to ensure it only runs once we have a valid player ID.
+    useEffect(() => {
+        if (mode !== 'online' || !serverIdProp || !playerId) return;
+
+        const playersCollection = collection(db, 'servers', serverIdProp, 'players');
+        const unsubFirestore = onSnapshot(playersCollection, (snapshot) => {
+            if (!sceneRef.current) return;
+            const scene = sceneRef.current;
+
+            snapshot.docChanges().forEach((change) => {
+                const data = change.doc.data();
+                const id = change.doc.id;
+
+                if (id === playerId) { // It's me
+                    if (playerHealth > data.health) setPlayerHealth(data.health);
+                    if (data.health <= 0 && gameStateRef.current === 'playing') setGameState('gameover');
+                    if (score !== data.kills) setScore(data.kills);
+                    return;
+                }
+
+                const playerMesh = otherPlayersRef.current[id]?.mesh;
+
+                if (change.type === 'added') {
+                    if (!playerMesh) {
+                        const newPlayerPlane = createVoxelPlane(new THREE.Color(0xffaa00));
+                        if (data.position) newPlayerPlane.position.set(data.position.x, data.position.y, data.position.z);
+                        if (data.quaternion) newPlayerPlane.quaternion.set(data.quaternion.x, data.quaternion.y, data.quaternion.z, data.quaternion.w);
+                        scene.add(newPlayerPlane);
+                        otherPlayersRef.current[id] = { mesh: newPlayerPlane, name: data.name || 'Unknown', health: data.health || 100 };
+                    }
+                } else if (change.type === 'modified') {
+                    if (playerMesh) {
+                        if(data.position) playerMesh.position.lerp(new THREE.Vector3(data.position.x, data.position.y, data.position.z), 0.3);
+                        if(data.quaternion) playerMesh.quaternion.slerp(new THREE.Quaternion(data.quaternion.x, data.quaternion.y, data.quaternion.z, data.quaternion.w), 0.3);
+                        otherPlayersRef.current[id].health = data.health;
+                    }
+                } else if (change.type === 'removed') {
+                    if (playerMesh) {
+                        scene.remove(playerMesh);
+                        delete otherPlayersRef.current[id];
+                    }
+                }
+            });
+        });
+
+        return () => unsubFirestore();
+    }, [mode, serverIdProp, playerId, playerHealth, score]);
+
+    const inviteLink = serverIdProp ? `${typeof window !== 'undefined' ? window.location.origin : ''}/online` : '';
 
     return (
         <div className="relative w-screen h-screen bg-background overflow-hidden" onContextMenu={(e) => e.preventDefault()}>
@@ -691,7 +731,7 @@ export default function Game({ mode, serverId, playerId }: GameProps) {
             {gameState === 'loading' && (
                 <div className="absolute inset-0 flex flex-col items-center justify-center bg-background z-20">
                     <Loader2 className="h-16 w-16 animate-spin text-primary" />
-                    <p className="text-xl mt-4 font-headline">Loading Voxel Skies...</p>
+                    <p className="text-xl mt-4 font-headline">{mode === 'online' ? 'Joining Server...' : 'Loading Voxel Skies...'}</p>
                 </div>
             )}
             
@@ -768,7 +808,7 @@ export default function Game({ mode, serverId, playerId }: GameProps) {
                 </div>
             )}
 
-            {gameState === 'playing' && <HUD score={score} wave={wave} health={playerHealth} overheat={gunOverheat} altitude={altitude} mode={mode} serverId={serverId} />}
+            {gameState === 'playing' && <HUD score={score} wave={wave} health={playerHealth} overheat={gunOverheat} altitude={altitude} mode={mode} serverId={serverIdProp} />}
 
             {gameState === 'gameover' && (
                 <div className="absolute inset-0 flex items-center justify-center bg-black/50 z-10">
