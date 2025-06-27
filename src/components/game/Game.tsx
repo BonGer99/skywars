@@ -205,13 +205,19 @@ export default function Game() {
 
                 const enemyMesh = createVoxelPlane(new THREE.Color(0xff0000));
                 
+                const boundary = 1000;
                 const spawnAngle = Math.random() * Math.PI * 2;
                 const spawnDist = 600 + Math.random() * 200;
-                enemyMesh.position.set(
-                    playerRef.current.position.x + Math.sin(spawnAngle) * spawnDist,
-                    playerRef.current.position.y + (Math.random() - 0.5) * 100,
-                    playerRef.current.position.z + Math.cos(spawnAngle) * spawnDist
-                );
+                
+                let spawnX = playerRef.current.position.x + Math.sin(spawnAngle) * spawnDist;
+                let spawnZ = playerRef.current.position.z + Math.cos(spawnAngle) * spawnDist;
+                
+                spawnX = THREE.MathUtils.clamp(spawnX, -boundary + 50, boundary - 50);
+                spawnZ = THREE.MathUtils.clamp(spawnZ, -boundary + 50, boundary - 50);
+                
+                const spawnY = THREE.MathUtils.clamp(playerRef.current.position.y + (Math.random() - 0.5) * 100, 50, 150);
+
+                enemyMesh.position.set(spawnX, spawnY, spawnZ);
                 enemyMesh.lookAt(playerRef.current.position);
                 sceneRef.current.add(enemyMesh);
 
@@ -282,13 +288,20 @@ export default function Game() {
             if (gameStateRef.current === 'playing' && playerRef.current) {
                 const PITCH_SPEED = 1.2;
                 const ROLL_SPEED = 1.8;
+                const YAW_SPEED = 1.0;
                 const BASE_SPEED = 30;
                 const BOOST_MULTIPLIER = 2.0;
 
                 if (keysPressed['w'] || keysPressed['W']) playerRef.current.rotateX(-PITCH_SPEED * delta);
                 if (keysPressed['s'] || keysPressed['S']) playerRef.current.rotateX(PITCH_SPEED * delta);
-                if (keysPressed['a'] || keysPressed['A']) playerRef.current.rotateZ(ROLL_SPEED * delta);
-                if (keysPressed['d'] || keysPressed['D']) playerRef.current.rotateZ(-ROLL_SPEED * delta);
+                if (keysPressed['a'] || keysPressed['A']) {
+                    playerRef.current.rotateZ(ROLL_SPEED * delta);
+                    playerRef.current.rotateY(YAW_SPEED * delta);
+                }
+                if (keysPressed['d'] || keysPressed['D']) {
+                    playerRef.current.rotateZ(-ROLL_SPEED * delta);
+                    playerRef.current.rotateY(-YAW_SPEED * delta);
+                }
 
                 let currentSpeed = BASE_SPEED;
                 if (keysPressed['shift']) {
@@ -381,25 +394,44 @@ export default function Game() {
                 }
 
                 // AI Logic
-                enemiesRef.current.forEach(enemy => {
-                    if (!playerRef.current) return;
+                for (let i = enemiesRef.current.length - 1; i >= 0; i--) {
+                    const enemy = enemiesRef.current[i];
+                    if (!playerRef.current) continue;
 
+                    const groundLevel = ground.position.y;
+                    if (enemy.mesh.position.y - groundLevel <= 1) {
+                        scene.remove(enemy.mesh);
+                        enemiesRef.current.splice(i, 1);
+                        continue;
+                    }
+
+                    let targetPosition = playerRef.current.position.clone();
+                    let isReturning = false;
+
+                    const boundary = 1000;
+                    if (Math.abs(enemy.mesh.position.x) > boundary - 50 || Math.abs(enemy.mesh.position.z) > boundary - 50) {
+                        targetPosition.set(0, enemy.mesh.position.y, 0);
+                        isReturning = true;
+                    } else if (enemy.mesh.position.y > 200) {
+                        targetPosition = playerRef.current.position.clone();
+                        targetPosition.y = 150;
+                        isReturning = true;
+                    }
+                    
                     const distanceToPlayer = enemy.mesh.position.distanceTo(playerRef.current.position);
                     enemy.stateTimer -= delta;
 
-                    // State transition logic
-                    if (enemy.state === 'attacking' && distanceToPlayer < 200) {
+                    if (enemy.state === 'attacking' && distanceToPlayer < 200 && !isReturning) {
                         enemy.state = 'flyby';
-                        enemy.stateTimer = 3 + Math.random() * 2; // Fly straight for 3-5 seconds
+                        enemy.stateTimer = 3 + Math.random() * 2;
                     } else if (enemy.state === 'flyby' && enemy.stateTimer <= 0) {
                         enemy.state = 'attacking';
                     }
 
-                    // Movement logic
-                    if (enemy.state === 'attacking') {
+                    if (enemy.state === 'attacking' || isReturning) {
                         const targetQuaternion = new THREE.Quaternion();
                         const tempMatrix = new THREE.Matrix4();
-                        tempMatrix.lookAt(enemy.mesh.position, playerRef.current.position, enemy.mesh.up);
+                        tempMatrix.lookAt(enemy.mesh.position, targetPosition, enemy.mesh.up);
                         targetQuaternion.setFromRotationMatrix(tempMatrix);
                         enemy.mesh.quaternion.slerp(targetQuaternion, 0.02);
                     }
@@ -408,12 +440,11 @@ export default function Game() {
                     const enemyForward = new THREE.Vector3(0, 0, -1).applyQuaternion(enemy.mesh.quaternion);
                     enemy.mesh.position.add(enemyForward.clone().multiplyScalar(enemySpeed * delta));
 
-                    // Shooting logic
                     enemy.gunCooldown -= delta;
                     const vectorToPlayer = playerRef.current.position.clone().sub(enemy.mesh.position).normalize();
                     const dotProduct = enemyForward.dot(vectorToPlayer);
 
-                    if (enemy.gunCooldown <= 0 && dotProduct > 0.95 && enemy.state === 'attacking') { // Only shoot when facing player and attacking
+                    if (enemy.gunCooldown <= 0 && dotProduct > 0.95 && enemy.state === 'attacking' && !isReturning) {
                         enemy.gunCooldown = 2.0;
                         const bulletOffset = new THREE.Vector3(0, 0, -2).applyQuaternion(enemy.mesh.quaternion);
                         const bulletPos = enemy.mesh.position.clone().add(bulletOffset);
@@ -426,7 +457,7 @@ export default function Game() {
                         enemyBulletsRef.current.push({ mesh: bullet, velocity: bulletWorldVelocity });
                         scene.add(bullet);
                     }
-                });
+                }
             }
 
             // Update and check collisions for player bullets
