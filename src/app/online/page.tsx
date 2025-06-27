@@ -28,7 +28,6 @@ const initialServers: Omit<Server, 'players'>[] = [
 
 async function seedServers() {
     console.log('Checking for servers...');
-    const serversCollection = collection(db, 'servers');
     
     try {
         for (const serverData of initialServers) {
@@ -43,8 +42,8 @@ async function seedServers() {
         console.log('Server check complete.');
     } catch (error) {
         console.error("Error seeding servers: ", error);
-        // This error is critical for the user to see.
-        throw new Error("Could not initialize game servers. Check Firestore permissions and configuration.");
+        // Rethrow the error to be handled by the caller
+        throw error;
     }
 }
 
@@ -55,14 +54,17 @@ function OnlinePageContent() {
   const [playerName, setPlayerName] = useState('');
   const [isJoining, setIsJoining] = useState<string | null>(null); // Store server ID being joined
   const [isLoading, setIsLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
   const { toast } = useToast();
 
   useEffect(() => {
-    seedServers().catch(error => {
-        console.error("Failed to seed servers:", error);
+    seedServers().catch(err => {
+        console.error("Failed to seed servers:", err);
+        const description = "Could not initialize game servers. This is often due to Firestore security rules or network issues. Please check your Firebase console and internet connection.";
+        setError(description);
         toast({
             title: "Server Initialization Failed",
-            description: error.message || "Could not prepare game servers. Please check your connection and try again.",
+            description: description,
             variant: "destructive",
         });
         setIsLoading(false);
@@ -75,12 +77,15 @@ function OnlinePageContent() {
         serversData.push({ id: doc.id, ...doc.data() } as Server);
       });
       setServers(serversData);
+      setError(null);
       setIsLoading(false);
-    }, (error) => {
-      console.error("Error fetching servers: ", error);
+    }, (err) => {
+      console.error("Error fetching servers: ", err);
+      const description = "Could not connect to the server list. Check Firestore security rules and your internet connection.";
+      setError(description);
       toast({
           title: "Connection Error",
-          description: "Could not connect to the server list. Please check your connection and try again.",
+          description: description,
           variant: "destructive"
       });
       setIsLoading(false);
@@ -165,6 +170,11 @@ function OnlinePageContent() {
                  <div className="flex justify-center items-center h-40">
                     <Loader2 className="h-8 w-8 animate-spin text-primary" />
                  </div>
+              ) : error ? (
+                <div className="text-center text-destructive p-4 border border-destructive/50 rounded-lg bg-destructive/10">
+                    <p className="font-bold">A connection error occurred.</p>
+                    <p className="text-sm">{error}</p>
+                </div>
               ) : servers.length === 0 ? (
                 <div className="text-center text-muted-foreground">
                     <p>No servers available.</p>

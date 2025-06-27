@@ -7,7 +7,7 @@ const firebaseConfig = {
   apiKey: "AIzaSyBO0bk31m7aenlOFtmRLi-ldenzCq2DPxM",
   authDomain: "voxel-aces.firebaseapp.com",
   projectId: "voxel-aces",
-  storageBucket: "voxel-aces.appspot.com",
+  storageBucket: "voxel-aces.firebasestorage.app",
   messagingSenderId: "438756648013",
   appId: "1:438756648013:web:26aa83ff80a91064b66804"
 };
