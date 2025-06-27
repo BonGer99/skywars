@@ -21,6 +21,7 @@ export default function Game() {
     const [altitude, setAltitude] = useState(0);
     const [showAltitudeWarning, setShowAltitudeWarning] = useState(false);
     const [altitudeWarningTimer, setAltitudeWarningTimer] = useState(5);
+    const [whiteoutOpacity, setWhiteoutOpacity] = useState(0);
     
     const gameStateRef = useRef(gameState);
     const altitudeWarningTimerRef = useRef(5);
@@ -149,12 +150,12 @@ export default function Game() {
             const cloudMat = new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.8 });
             const cloud = new THREE.Mesh(new THREE.BoxGeometry(
                 Math.random() * 80 + 40, 
-                Math.random() * 20 + 10, 
+                Math.random() * 30 + 15, 
                 Math.random() * 80 + 40
             ), cloudMat);
             cloud.position.set(
                 (Math.random() - 0.5) * 2000, 
-                200 + (Math.random() - 0.5) * 20,
+                150 + (Math.random() - 0.5) * 40,
                 (Math.random() - 0.5) * 2000
             );
             cloudLayer.add(cloud);
@@ -181,6 +182,7 @@ export default function Game() {
             setAltitude(player.position.y - ground.position.y);
             setShowAltitudeWarning(false);
             setAltitudeWarningTimer(5);
+            setWhiteoutOpacity(0);
             altitudeWarningTimerRef.current = 5;
         };
         
@@ -217,9 +219,10 @@ export default function Game() {
                 player.position.add(forward.multiplyScalar(currentSpeed * delta));
 
                 const groundLevel = ground.position.y;
-                setAltitude(player.position.y - groundLevel);
+                const currentAltitude = player.position.y - groundLevel;
+                setAltitude(currentAltitude);
 
-                if (player.position.y <= groundLevel) {
+                if (currentAltitude <= 0) {
                     setPlayerHealth(h => {
                         if (h > 0) {
                            setGameState('gameover');
@@ -228,7 +231,14 @@ export default function Game() {
                     });
                 }
 
-                if (player.position.y > 220) {
+                if (currentAltitude > 200) {
+                    const opacity = Math.min(0.95, ((currentAltitude - 200) / 20) * 0.95);
+                    setWhiteoutOpacity(opacity);
+                } else {
+                    setWhiteoutOpacity(0);
+                }
+
+                if (currentAltitude > 220) {
                     setShowAltitudeWarning(true);
                     altitudeWarningTimerRef.current -= delta;
                     setAltitudeWarningTimer(Math.max(0, altitudeWarningTimerRef.current));
@@ -335,6 +345,11 @@ export default function Game() {
         <div className="relative w-screen h-screen bg-background overflow-hidden" onContextMenu={(e) => e.preventDefault()}>
             <div ref={mountRef} className="absolute top-0 left-0 w-full h-full" />
             
+            <div 
+                className="absolute inset-0 bg-white z-10 pointer-events-none"
+                style={{ opacity: whiteoutOpacity }}
+            />
+
             {gameState === 'loading' && (
                 <div className="absolute inset-0 flex flex-col items-center justify-center bg-background z-20">
                     <Loader2 className="h-16 w-16 animate-spin text-primary" />
