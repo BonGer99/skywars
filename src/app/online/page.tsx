@@ -120,6 +120,9 @@ function OnlinePageContent() {
         name: playerName,
         joinedAt: serverTimestamp(),
         kills: 0,
+        health: 100,
+        position: { x: (Math.random() - 0.5) * 500, y: 50, z: (Math.random() - 0.5) * 500 },
+        quaternion: { x: 0, y: 0, z: 0, w: 1 },
       });
       
       await runTransaction(db, async (transaction) => {
