@@ -84,7 +84,7 @@ export default function Game({ mode, serverId: serverIdProp, playerName: playerN
     const [playerHealth, setPlayerHealth] = useState(100);
     const [gunOverheat, setGunOverheat] = useState(0);
     const [altitude, setAltitude] = useState(0);
-    const [showAltitudeWarning, setShowAltitudeWarning] = useState(showAltitudeWarning);
+    const [showAltitudeWarning, setShowAltitudeWarning] = useState(false);
     const [altitudeWarningTimer, setAltitudeWarningTimer] = useState(5);
     const [showBoundaryWarning, setShowBoundaryWarning] = useState(false);
     const [boundaryWarningTimer, setBoundaryWarningTimer] = useState(7);
