@@ -47,40 +47,98 @@ export default function Game() {
 
         const createVoxelPlane = (color: THREE.Color) => {
             const plane = new THREE.Group();
-            const bodyMat = new THREE.MeshLambertMaterial({ color });
+            const bodyMat = new THREE.MeshLambertMaterial({ color, flatShading: true });
+            
             const body = new THREE.Mesh(new THREE.BoxGeometry(1.5, 1, 4), bodyMat);
             plane.add(body);
+
             const wings = new THREE.Mesh(new THREE.BoxGeometry(8, 0.4, 1.5), bodyMat);
             wings.position.y = 0.2;
             plane.add(wings);
+            
             const tail = new THREE.Mesh(new THREE.BoxGeometry(3, 0.2, 1), bodyMat);
             tail.position.set(0, 0.2, -2.5);
             plane.add(tail);
+            
             const cockpitGeo = new THREE.BoxGeometry(0.8, 0.6, 1);
-            const cockpitMat = new THREE.MeshLambertMaterial({ color: 0x000000 });
+            const cockpitMat = new THREE.MeshLambertMaterial({ color: 0x000000, flatShading: true });
             const cockpit = new THREE.Mesh(cockpitGeo, cockpitMat);
             cockpit.position.set(0, 0.8, -0.5);
             plane.add(cockpit);
+            
             return plane;
         };
         
         const player = createVoxelPlane(new THREE.Color(0x0077ff));
         scene.add(player);
 
-        const cameraOffset = new THREE.Vector3(0, 5, 12);
+        const cameraOffset = new THREE.Vector3(0, 8, 15);
 
-        const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
+        const ambientLight = new THREE.AmbientLight(0xffffff, 0.7);
         scene.add(ambientLight);
-        const directionalLight = new THREE.DirectionalLight(0xffffff, 1.0);
+        const directionalLight = new THREE.DirectionalLight(0xffffff, 0.8);
         directionalLight.position.set(5, 10, 7.5);
         scene.add(directionalLight);
 
         const groundGeo = new THREE.PlaneGeometry(4000, 4000);
-        const groundMat = new THREE.MeshLambertMaterial({ color: 0x3d85c6 });
+        const groundMat = new THREE.MeshLambertMaterial({ color: 0x4A6B3A, flatShading: true });
         const ground = new THREE.Mesh(groundGeo, groundMat);
         ground.rotation.x = -Math.PI / 2;
         ground.position.y = -50;
         scene.add(ground);
+
+        // Add lakes
+        for (let i = 0; i < 8; i++) {
+            const lakeGeo = new THREE.PlaneGeometry(Math.random() * 250 + 50, Math.random() * 250 + 50);
+            const lakeMat = new THREE.MeshLambertMaterial({ color: 0x3d85c6, flatShading: true });
+            const lake = new THREE.Mesh(lakeGeo, lakeMat);
+            lake.rotation.x = -Math.PI / 2;
+            lake.position.set(
+                (Math.random() - 0.5) * 3800,
+                -49.9,
+                (Math.random() - 0.5) * 3800
+            );
+            scene.add(lake);
+        }
+
+        // Add trees
+        const createTree = (x: number, z: number) => {
+            const tree = new THREE.Group();
+            
+            const trunkGeo = new THREE.BoxGeometry(4, 15, 4);
+            const trunkMat = new THREE.MeshLambertMaterial({ color: 0x8B4513, flatShading: true });
+            const trunk = new THREE.Mesh(trunkGeo, trunkMat);
+            trunk.position.y = 7.5;
+            tree.add(trunk);
+            
+            const leavesGeo = new THREE.BoxGeometry(12, 12, 12);
+            const leavesMat = new THREE.MeshLambertMaterial({ color: 0x228B22, flatShading: true });
+            const leaves = new THREE.Mesh(leavesGeo, leavesMat);
+            leaves.position.y = 20;
+            tree.add(leaves);
+            
+            tree.position.set(x, -50, z);
+            scene.add(tree);
+        };
+        
+        // Add bushes
+        const createBush = (x: number, z: number) => {
+            const bushGeo = new THREE.BoxGeometry(7, 7, 7);
+            const bushMat = new THREE.MeshLambertMaterial({ color: 0x556B2F, flatShading: true });
+            const bush = new THREE.Mesh(bushGeo, bushMat);
+            bush.position.set(x, -46.5, z);
+            scene.add(bush);
+        };
+
+        for (let i = 0; i < 150; i++) {
+            const x = (Math.random() - 0.5) * 3800;
+            const z = (Math.random() - 0.5) * 3800;
+            if (Math.random() > 0.4) {
+                createTree(x, z);
+            } else {
+                createBush(x, z);
+            }
+        }
 
         for(let i = 0; i < 20; i++) {
             const cloudMat = new THREE.MeshBasicMaterial({ color: 0xffffff });
