@@ -12,7 +12,7 @@ import { ArrowLeft, Loader2, Users } from 'lucide-react';
 import { useToast } from "@/hooks/use-toast";
 
 import { db } from '@/lib/firebase';
-import { collection, query, onSnapshot, doc, addDoc, getDocs, writeBatch, serverTimestamp, runTransaction, getDoc, setDoc } from 'firebase/firestore';
+import { collection, query, onSnapshot, doc, getDoc, setDoc, addDoc, runTransaction, serverTimestamp } from 'firebase/firestore';
 
 type Server = {
   id: string;
@@ -28,7 +28,6 @@ const initialServers: Omit<Server, 'players'>[] = [
 
 async function seedServers() {
     console.log('Checking for servers...');
-    
     try {
         for (const serverData of initialServers) {
             const serverRef = doc(db, 'servers', serverData.id);
@@ -42,8 +41,7 @@ async function seedServers() {
         console.log('Server check complete.');
     } catch (error) {
         console.error("Error seeding servers: ", error);
-        // Rethrow the error to be handled by the caller
-        throw error;
+        throw error; // Rethrow to be caught by the caller
     }
 }
 
@@ -81,11 +79,11 @@ function OnlinePageContent() {
       setIsLoading(false);
     }, (err) => {
       console.error("Error fetching servers: ", err);
-      const description = "Could not connect to the server list. Check Firestore security rules and your internet connection.";
+      const description = "Could not connect to the server list. This usually means your Firestore security rules are blocking access. Please check them in the Firebase Console.";
       setError(description);
       toast({
           title: "Connection Error",
-          description: description,
+          description: "Could not connect to the server list.",
           variant: "destructive"
       });
       setIsLoading(false);
@@ -117,9 +115,8 @@ function OnlinePageContent() {
 
     try {
       const serverRef = doc(db, 'servers', server.id);
-      const playersRef = collection(db, `servers/${server.id}/players`);
       
-      const playerDocRef = await addDoc(playersRef, {
+      const playerDocRef = await addDoc(collection(db, `servers/${server.id}/players`), {
         name: playerName,
         joinedAt: serverTimestamp(),
         kills: 0,
@@ -178,7 +175,6 @@ function OnlinePageContent() {
               ) : servers.length === 0 ? (
                 <div className="text-center text-muted-foreground">
                     <p>No servers available.</p>
-                    <p className="text-sm">This may be due to a connection issue or Firestore security rules.</p>
                 </div>
               ) : (
                 <div className="border rounded-lg">
