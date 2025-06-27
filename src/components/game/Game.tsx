@@ -41,6 +41,7 @@ export default function Game() {
     const [whiteoutOpacity, setWhiteoutOpacity] = useState(0);
     
     const gameStateRef = useRef(gameState);
+    const waveRef = useRef(wave);
     const altitudeWarningTimerRef = useRef(5);
     const boundaryWarningTimerRef = useRef(7);
     const playerBulletsRef = useRef<Bullet[]>([]);
@@ -52,6 +53,10 @@ export default function Game() {
     useEffect(() => {
       gameStateRef.current = gameState;
     }, [gameState]);
+
+    useEffect(() => {
+        waveRef.current = wave;
+    }, [wave]);
 
     const startGame = useCallback(() => {
         setGameState('playing');
@@ -194,19 +199,20 @@ export default function Game() {
 
             try {
                 const behavior = await generateOpponentBehavior({
-                    waveNumber: wave,
+                    waveNumber: waveRef.current,
                     playerSkillLevel: 'intermediate',
                 });
 
                 const enemyMesh = createVoxelPlane(new THREE.Color(0xff0000));
                 
                 const spawnAngle = Math.random() * Math.PI * 2;
-                const spawnDist = 400 + Math.random() * 200;
+                const spawnDist = 600 + Math.random() * 200;
                 enemyMesh.position.set(
                     playerRef.current.position.x + Math.sin(spawnAngle) * spawnDist,
-                    playerRef.current.position.y + (Math.random() - 0.5) * 50,
+                    playerRef.current.position.y + (Math.random() - 0.5) * 100,
                     playerRef.current.position.z + Math.cos(spawnAngle) * spawnDist
                 );
+                enemyMesh.lookAt(playerRef.current.position);
                 sceneRef.current.add(enemyMesh);
 
                 const newEnemy: Enemy = {
@@ -222,6 +228,15 @@ export default function Game() {
             } catch (error) {
                 console.error("Failed to spawn enemy:", error);
             }
+        };
+
+        const startNewWave = (waveNumber: number) => {
+            setTimeout(async () => {
+                if(gameStateRef.current !== 'playing') return;
+                for (let i = 0; i < waveNumber; i++) {
+                    await spawnEnemy();
+                }
+            }, 2500);
         };
 
         const resetGame = () => {
@@ -249,8 +264,6 @@ export default function Game() {
             setBoundaryWarningTimer(7);
             boundaryWarningTimerRef.current = 7;
             setWhiteoutOpacity(0);
-
-            spawnEnemy();
         };
         
         let lastTime = 0;
@@ -262,6 +275,7 @@ export default function Game() {
 
             if (gameStateRef.current === 'playing' && lastGameState !== 'playing') {
                 resetGame();
+                startNewWave(1);
             }
             lastGameState = gameStateRef.current;
             
@@ -392,7 +406,7 @@ export default function Game() {
                     
                     const enemySpeed = 25;
                     const enemyForward = new THREE.Vector3(0, 0, -1).applyQuaternion(enemy.mesh.quaternion);
-                    enemy.mesh.position.add(enemyForward.multiplyScalar(enemySpeed * delta));
+                    enemy.mesh.position.add(enemyForward.clone().multiplyScalar(enemySpeed * delta));
 
                     // Shooting logic
                     enemy.gunCooldown -= delta;
@@ -430,7 +444,12 @@ export default function Game() {
                             scene.remove(enemy.mesh);
                             enemiesRef.current.splice(j, 1);
                             setScore(s => s + 100);
-                            setTimeout(spawnEnemy, 3000); // Respawn after 3 seconds
+                            
+                            if (enemiesRef.current.length === 0 && gameStateRef.current === 'playing') {
+                                const nextWave = waveRef.current + 1;
+                                setWave(nextWave);
+                                startNewWave(nextWave);
+                            }
                         }
                         break;
                     }
@@ -521,7 +540,7 @@ export default function Game() {
                 }
             });
         };
-    }, [wave]);
+    }, []);
 
     return (
         <div className="relative w-screen h-screen bg-background overflow-hidden" onContextMenu={(e) => e.preventDefault()}>
