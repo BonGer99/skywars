@@ -28,20 +28,24 @@ export default function Game() {
 
     const [gameState, setGameState] = useState<GameState>('loading');
     const [score, setScore] = useState(0);
-    const [wave, setWave] = useState(0);
+    const [wave, setWave] = useState(1);
     const [playerHealth, setPlayerHealth] = useState(100);
     const [gunOverheat, setGunOverheat] = useState(0);
     const [altitude, setAltitude] = useState(0);
     const [showAltitudeWarning, setShowAltitudeWarning] = useState(false);
     const [altitudeWarningTimer, setAltitudeWarningTimer] = useState(5);
+    const [showBoundaryWarning, setShowBoundaryWarning] = useState(false);
+    const [boundaryWarningTimer, setBoundaryWarningTimer] = useState(7);
     const [whiteoutOpacity, setWhiteoutOpacity] = useState(0);
     
     const gameStateRef = useRef(gameState);
     const altitudeWarningTimerRef = useRef(5);
+    const boundaryWarningTimerRef = useRef(7);
     const playerBulletsRef = useRef<Bullet[]>([]);
     const enemyBulletsRef = useRef<Bullet[]>([]);
     const enemiesRef = useRef<Enemy[]>([]);
     const sceneRef = useRef<THREE.Scene | null>(null);
+    const playerRef = useRef<THREE.Group | null>(null);
 
     useEffect(() => {
       gameStateRef.current = gameState;
@@ -52,6 +56,7 @@ export default function Game() {
     }, []);
 
     useEffect(() => {
+        if (typeof window === 'undefined') return;
         if (!mountRef.current) return;
         
         const mount = mountRef.current;
@@ -60,11 +65,12 @@ export default function Game() {
         const scene = new THREE.Scene();
         sceneRef.current = scene;
         scene.background = new THREE.Color(0x87CEEB); 
+        scene.fog = new THREE.Fog(0x87CEEB, 1000, 2500);
 
         const camera = new THREE.PerspectiveCamera(75, mount.clientWidth / mount.clientHeight, 0.1, 4000);
         const renderer = new THREE.WebGLRenderer({ antialias: false, powerPreference: "low-power" });
         
-        renderer.setPixelRatio(window.devicePixelRatio > 1 ? 1.5 : 1);
+        renderer.setPixelRatio(1);
         renderer.setSize(mount.clientWidth, mount.clientHeight);
         mount.appendChild(renderer.domElement);
 
@@ -93,6 +99,7 @@ export default function Game() {
         };
         
         const player = createVoxelPlane(new THREE.Color(0x0077ff));
+        playerRef.current = player;
         scene.add(player);
 
         const cameraOffset = new THREE.Vector3(0, 8, 15);
@@ -125,19 +132,16 @@ export default function Game() {
 
         const createTree = (x: number, z: number) => {
             const tree = new THREE.Group();
-            
             const trunkGeo = new THREE.BoxGeometry(4, 15, 4);
             const trunkMat = new THREE.MeshLambertMaterial({ color: 0x8B4513, flatShading: true });
             const trunk = new THREE.Mesh(trunkGeo, trunkMat);
             trunk.position.y = 7.5;
             tree.add(trunk);
-            
             const leavesGeo = new THREE.BoxGeometry(12, 12, 12);
             const leavesMat = new THREE.MeshLambertMaterial({ color: 0x228B22, flatShading: true });
             const leaves = new THREE.Mesh(leavesGeo, leavesMat);
             leaves.position.y = 20;
             tree.add(leaves);
-            
             tree.position.set(x, -50, z);
             scene.add(tree);
         };
@@ -184,7 +188,7 @@ export default function Game() {
         let lastGameState = gameStateRef.current;
         
         const spawnEnemy = async () => {
-            if (!sceneRef.current) return;
+            if (!sceneRef.current || !playerRef.current) return;
 
             try {
                 const behavior = await generateOpponentBehavior({
@@ -197,9 +201,9 @@ export default function Game() {
                 const spawnAngle = Math.random() * Math.PI * 2;
                 const spawnDist = 400 + Math.random() * 200;
                 enemyMesh.position.set(
-                    player.position.x + Math.sin(spawnAngle) * spawnDist,
-                    player.position.y + (Math.random() - 0.5) * 50,
-                    player.position.z + Math.cos(spawnAngle) * spawnDist
+                    playerRef.current.position.x + Math.sin(spawnAngle) * spawnDist,
+                    playerRef.current.position.y + (Math.random() - 0.5) * 50,
+                    playerRef.current.position.z + Math.cos(spawnAngle) * spawnDist
                 );
                 sceneRef.current.add(enemyMesh);
 
@@ -217,9 +221,10 @@ export default function Game() {
         };
 
         const resetGame = () => {
-            player.position.set(0, 20, 0);
-            player.rotation.set(0, 0, 0);
-            player.quaternion.set(0, 0, 0, 1);
+            if (!playerRef.current) return;
+            playerRef.current.position.set(0, 20, 0);
+            playerRef.current.rotation.set(0, 0, 0);
+            playerRef.current.quaternion.set(0, 0, 0, 1);
             
             playerBulletsRef.current.forEach(b => scene.remove(b.mesh));
             playerBulletsRef.current = [];
@@ -232,11 +237,14 @@ export default function Game() {
             setGunOverheat(0);
             setScore(0);
             setWave(1);
-            setAltitude(player.position.y - ground.position.y);
+            setAltitude(playerRef.current.position.y - ground.position.y);
             setShowAltitudeWarning(false);
             setAltitudeWarningTimer(5);
-            setWhiteoutOpacity(0);
             altitudeWarningTimerRef.current = 5;
+            setShowBoundaryWarning(false);
+            setBoundaryWarningTimer(7);
+            boundaryWarningTimerRef.current = 7;
+            setWhiteoutOpacity(0);
 
             spawnEnemy();
         };
@@ -253,16 +261,16 @@ export default function Game() {
             }
             lastGameState = gameStateRef.current;
             
-            if (gameStateRef.current === 'playing') {
+            if (gameStateRef.current === 'playing' && playerRef.current) {
                 const PITCH_SPEED = 1.2;
                 const ROLL_SPEED = 1.8;
                 const BASE_SPEED = 30;
                 const BOOST_MULTIPLIER = 2.0;
 
-                if (keysPressed['w'] || keysPressed['W']) player.rotateX(-PITCH_SPEED * delta);
-                if (keysPressed['s'] || keysPressed['S']) player.rotateX(PITCH_SPEED * delta);
-                if (keysPressed['a'] || keysPressed['A']) player.rotateZ(ROLL_SPEED * delta);
-                if (keysPressed['d'] || keysPressed['D']) player.rotateZ(-ROLL_SPEED * delta);
+                if (keysPressed['w'] || keysPressed['W']) playerRef.current.rotateX(-PITCH_SPEED * delta);
+                if (keysPressed['s'] || keysPressed['S']) playerRef.current.rotateX(PITCH_SPEED * delta);
+                if (keysPressed['a'] || keysPressed['A']) playerRef.current.rotateZ(ROLL_SPEED * delta);
+                if (keysPressed['d'] || keysPressed['D']) playerRef.current.rotateZ(-ROLL_SPEED * delta);
 
                 let currentSpeed = BASE_SPEED;
                 if (keysPressed['shift']) {
@@ -270,11 +278,11 @@ export default function Game() {
                 }
                 
                 const forward = new THREE.Vector3(0, 0, -1);
-                forward.applyQuaternion(player.quaternion);
-                player.position.add(forward.multiplyScalar(currentSpeed * delta));
+                forward.applyQuaternion(playerRef.current.quaternion);
+                playerRef.current.position.add(forward.multiplyScalar(currentSpeed * delta));
 
                 const groundLevel = ground.position.y;
-                const currentAltitude = player.position.y - groundLevel;
+                const currentAltitude = playerRef.current.position.y - groundLevel;
                 setAltitude(currentAltitude);
 
                 if (currentAltitude <= 0) {
@@ -311,6 +319,26 @@ export default function Game() {
                     setAltitudeWarningTimer(5);
                 }
 
+                const boundary = 1000;
+                if (Math.abs(playerRef.current.position.x) > boundary || Math.abs(playerRef.current.position.z) > boundary) {
+                    setShowBoundaryWarning(true);
+                    boundaryWarningTimerRef.current -= delta;
+                    setBoundaryWarningTimer(Math.max(0, boundaryWarningTimerRef.current));
+                    if (boundaryWarningTimerRef.current <= 0) {
+                         setPlayerHealth(h => {
+                            if (h > 0) {
+                               setGameState('gameover');
+                            }
+                            return 0;
+                        });
+                    }
+                } else {
+                    setShowBoundaryWarning(false);
+                    boundaryWarningTimerRef.current = 7;
+                    setBoundaryWarningTimer(7);
+                }
+
+
                 gunCooldown = Math.max(0, gunCooldown - delta);
                 setGunOverheat(o => Math.max(0, o - 15 * delta));
                 
@@ -318,14 +346,14 @@ export default function Game() {
                     setGunOverheat(o => {
                         if (o < 100) {
                             gunCooldown = 0.1;
-                            const bulletOffset = new THREE.Vector3(0, 0, -2).applyQuaternion(player.quaternion);
-                            const bulletPos = player.position.clone().add(bulletOffset);
+                            const bulletOffset = new THREE.Vector3(0, 0, -2).applyQuaternion(playerRef.current!.quaternion);
+                            const bulletPos = playerRef.current!.position.clone().add(bulletOffset);
                             const bulletGeo = new THREE.BoxGeometry(0.2, 0.2, 1);
                             const bulletMat = new THREE.MeshBasicMaterial({ color: 0xffff00 });
                             const bullet = new THREE.Mesh(bulletGeo, bulletMat);
                             bullet.position.copy(bulletPos);
-                            bullet.quaternion.copy(player.quaternion);
-                            const bulletWorldVelocity = new THREE.Vector3(0, 0, -200).applyQuaternion(player.quaternion);
+                            bullet.quaternion.copy(playerRef.current!.quaternion);
+                            const bulletWorldVelocity = new THREE.Vector3(0, 0, -200).applyQuaternion(playerRef.current!.quaternion);
                             playerBulletsRef.current.push({ mesh: bullet, velocity: bulletWorldVelocity });
                             scene.add(bullet);
                             return o + 5;
@@ -336,27 +364,28 @@ export default function Game() {
 
                 // AI Logic
                 enemiesRef.current.forEach(enemy => {
-                    const enemySpeed = 25; // Can be tied to behavior.difficultyLevel
+                    if (!playerRef.current) return;
+                    const enemySpeed = 25;
                     const targetQuaternion = new THREE.Quaternion();
                     const tempMatrix = new THREE.Matrix4();
-                    tempMatrix.lookAt(enemy.mesh.position, player.position, enemy.mesh.up);
+                    tempMatrix.lookAt(enemy.mesh.position, playerRef.current.position, enemy.mesh.up);
                     targetQuaternion.setFromRotationMatrix(tempMatrix);
                     enemy.mesh.quaternion.slerp(targetQuaternion, 0.02);
                     
-                    const enemyForward = new THREE.Vector3(0, 0, 1).applyQuaternion(enemy.mesh.quaternion);
+                    const enemyForward = new THREE.Vector3(0, 0, -1).applyQuaternion(enemy.mesh.quaternion);
                     enemy.mesh.position.add(enemyForward.multiplyScalar(enemySpeed * delta));
 
                     enemy.gunCooldown -= delta;
                     if (enemy.gunCooldown <= 0) {
                         enemy.gunCooldown = 2.0;
-                        const bulletOffset = new THREE.Vector3(0, 0, 2).applyQuaternion(enemy.mesh.quaternion);
+                        const bulletOffset = new THREE.Vector3(0, 0, -2).applyQuaternion(enemy.mesh.quaternion);
                         const bulletPos = enemy.mesh.position.clone().add(bulletOffset);
                         const bulletGeo = new THREE.BoxGeometry(0.3, 0.3, 1.5);
                         const bulletMat = new THREE.MeshBasicMaterial({ color: 0xff00ff });
                         const bullet = new THREE.Mesh(bulletGeo, bulletMat);
                         bullet.position.copy(bulletPos);
                         bullet.quaternion.copy(enemy.mesh.quaternion);
-                        const bulletWorldVelocity = new THREE.Vector3(0, 0, 200).applyQuaternion(enemy.mesh.quaternion);
+                        const bulletWorldVelocity = new THREE.Vector3(0, 0, -200).applyQuaternion(enemy.mesh.quaternion);
                         enemyBulletsRef.current.push({ mesh: bullet, velocity: bulletWorldVelocity });
                         scene.add(bullet);
                     }
@@ -384,7 +413,7 @@ export default function Game() {
                     }
                 }
 
-                if (hit || b.mesh.position.distanceTo(player.position) > 2000) {
+                if (hit || (playerRef.current && b.mesh.position.distanceTo(playerRef.current.position) > 2000)) {
                     scene.remove(b.mesh);
                     playerBulletsRef.current.splice(i, 1);
                 }
@@ -396,7 +425,7 @@ export default function Game() {
                 b.mesh.position.add(b.velocity.clone().multiplyScalar(delta));
                 
                 let hit = false;
-                if (b.mesh.position.distanceTo(player.position) < 5) {
+                if (playerRef.current && b.mesh.position.distanceTo(playerRef.current.position) < 5) {
                     hit = true;
                     setPlayerHealth(h => {
                         const newHealth = Math.max(0, h - 10);
@@ -407,18 +436,20 @@ export default function Game() {
                     });
                 }
 
-                if (hit || b.mesh.position.distanceTo(player.position) > 2000) {
+                if (hit || (playerRef.current && b.mesh.position.distanceTo(playerRef.current.position) > 2000)) {
                     scene.remove(b.mesh);
                     enemyBulletsRef.current.splice(i, 1);
                 }
             }
 
-            const idealOffset = cameraOffset.clone();
-            idealOffset.applyQuaternion(player.quaternion);
-            const idealPosition = player.position.clone().add(idealOffset);
-            
-            camera.position.lerp(idealPosition, 0.1);
-            camera.lookAt(player.position);
+            if (playerRef.current) {
+                const idealOffset = cameraOffset.clone();
+                idealOffset.applyQuaternion(playerRef.current.quaternion);
+                const idealPosition = playerRef.current.position.clone().add(idealOffset);
+                
+                camera.position.lerp(idealPosition, 0.1);
+                camera.lookAt(playerRef.current.position);
+            }
 
             renderer.render(scene, camera);
         };
@@ -451,15 +482,18 @@ export default function Game() {
             window.removeEventListener('mousedown', handleMouseDown);
             window.removeEventListener('mouseup', handleMouseUp);
             window.removeEventListener('resize', handleResize);
-            if(mountRef.current) {
+            if(mountRef.current && renderer.domElement) {
                 mountRef.current.removeChild(renderer.domElement);
             }
             renderer.dispose();
             scene.traverse(child => {
                 if (child instanceof THREE.Mesh) {
                     child.geometry.dispose();
-                    if(child.material instanceof THREE.Material || Array.isArray(child.material)) {
-                        (Array.isArray(child.material) ? child.material : [child.material]).forEach(mat => mat.dispose());
+                    const material = child.material as THREE.Material | THREE.Material[];
+                    if(Array.isArray(material)) {
+                        material.forEach(mat => mat.dispose());
+                    } else {
+                        material.dispose();
                     }
                 }
             });
@@ -502,6 +536,20 @@ export default function Game() {
                             <p className="text-lg">Descend below 220m immediately!</p>
                             <p className="text-5xl font-mono font-bold mt-2">
                                 {altitudeWarningTimer.toFixed(1)}
+                            </p>
+                        </CardContent>
+                    </Card>
+                </div>
+            )}
+
+            {showBoundaryWarning && (
+                <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 z-20 text-center">
+                    <Card className="bg-destructive/80 text-destructive-foreground p-4 border-2 border-destructive-foreground">
+                        <CardTitle className="text-3xl font-bold">WARNING: LEAVING BATTLEFIELD</CardTitle>
+                        <CardContent className="p-2 pt-2">
+                            <p className="text-lg">Return to the combat zone!</p>
+                            <p className="text-5xl font-mono font-bold mt-2">
+                                {boundaryWarningTimer.toFixed(1)}
                             </p>
                         </CardContent>
                     </Card>
