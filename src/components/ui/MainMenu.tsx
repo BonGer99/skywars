@@ -25,7 +25,7 @@ export default function MainMenu() {
       </p>
       <Card className="max-w-md mx-auto bg-card/80 backdrop-blur-sm border-primary/20 shadow-xl">
         <CardHeader>
-          <CardTitle className="text-center text-3xl font-headline text-primary">Game Menu</CardTitle>
+          <CardTitle className="text-center text-3xl font-headline text-primary">Main Menu</CardTitle>
         </CardHeader>
         <CardContent className="flex flex-col gap-4">
           <Link href="/play" passHref>
