@@ -47,11 +47,27 @@ function OnlinePageContent() {
   const router = useRouter();
   const [playerName, setPlayerName] = useState('');
   const [isJoining, setIsJoining] = useState(false);
+  const [isSeeding, setIsSeeding] = useState(true);
   const { toast } = useToast();
 
   useEffect(() => {
-    seedServers();
-  }, []);
+    const initializeServers = async () => {
+        setIsSeeding(true);
+        try {
+            await seedServers();
+        } catch (error) {
+            console.error("Failed to seed servers:", error);
+            toast({
+                title: "Server Initialization Failed",
+                description: "Could not connect to the game servers. Please check your connection and try again.",
+                variant: "destructive",
+            });
+        } finally {
+            setIsSeeding(false);
+        }
+    };
+    initializeServers();
+  }, [toast]);
 
   const handleFindMatch = async () => {
     if (!playerName) {
@@ -141,8 +157,9 @@ function OnlinePageContent() {
                 className="text-lg text-center"
               />
             </div>
-            <Button size="lg" className="w-full" onClick={handleFindMatch} disabled={isJoining}>
-              {isJoining ? <><Loader2 className="mr-2 h-5 w-5 animate-spin" /> Joining...</> : 'Find Match'}
+            <Button size="lg" className="w-full" onClick={handleFindMatch} disabled={isJoining || isSeeding}>
+                {isSeeding ? <><Loader2 className="mr-2 h-5 w-5 animate-spin" /> Preparing Servers...</> : 
+                 isJoining ? <><Loader2 className="mr-2 h-5 w-5 animate-spin" /> Joining...</> : 'Find Match'}
             </Button>
         </CardContent>
          <CardFooter className="flex-col sm:flex-row gap-2">
