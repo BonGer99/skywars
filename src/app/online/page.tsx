@@ -23,11 +23,9 @@ type Server = {
   maxPlayers: number;
 };
 
+// Simplified to only include the Europe server for debugging.
 const initialServers: Omit<Server, 'id' | 'players'>[] = [
-  { name: 'Voxel Skies - East US', region: 'East US', maxPlayers: 24 },
   { name: 'Aces High - Europe', region: 'Europe', maxPlayers: 24 },
-  { name: 'Dogfight Arena - Asia', region: 'Asia', maxPlayers: 24 },
-  { name: 'G-Force Giants - South America', region: 'S. America', maxPlayers: 24 },
 ];
 
 async function seedServers() {
@@ -68,31 +66,33 @@ function OnlinePageContent() {
 
     try {
       const serversCollection = collection(db, 'servers');
-      const snapshot = await getDocs(serversCollection);
+      // Query specifically for the Europe server to simplify debugging.
+      const q = query(serversCollection, where("name", "==", "Aces High - Europe"), limit(1));
+      const snapshot = await getDocs(q);
 
       if (snapshot.empty) {
         toast({
-            title: "No Servers Found",
-            description: "Could not find any game servers. Please try again in a moment.",
+            title: "Europe Server Not Found",
+            description: "Could not find the Europe game server. Please try again in a moment.",
             variant: "destructive"
         });
         setIsJoining(false);
         return;
       }
       
-      const availableServerDoc = snapshot.docs.find(doc => doc.data().players < doc.data().maxPlayers);
+      const serverDoc = snapshot.docs[0];
 
-      if (!availableServerDoc) {
-        toast({
-            title: "No Available Servers",
-            description: "All servers are currently full. Please try again later.",
+      if (serverDoc.data().players >= serverDoc.data().maxPlayers) {
+         toast({
+            title: "Europe Server Full",
+            description: "The Europe server is currently full. Please try again later.",
             variant: "destructive"
         });
         setIsJoining(false);
         return;
       }
       
-      const server = { id: availableServerDoc.id, ...availableServerDoc.data() } as Server;
+      const server = { id: serverDoc.id, ...serverDoc.data() } as Server;
 
       const serverRef = doc(db, 'servers', server.id);
       const playersRef = collection(db, `servers/${server.id}/players`);
