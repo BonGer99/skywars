@@ -12,7 +12,7 @@ import { ArrowLeft, Loader2, Users } from 'lucide-react';
 import { useToast } from "@/hooks/use-toast";
 
 import { db } from '@/lib/firebase';
-import { collection, query, onSnapshot, doc, addDoc, getDocs, writeBatch, serverTimestamp, runTransaction } from 'firebase/firestore';
+import { collection, query, onSnapshot, doc, addDoc, getDocs, writeBatch, serverTimestamp, runTransaction, getDoc, setDoc } from 'firebase/firestore';
 
 type Server = {
   id: string;
@@ -22,26 +22,32 @@ type Server = {
   maxPlayers: number;
 };
 
-const initialServers: Omit<Server, 'id' | 'players'>[] = [
-  { name: 'Aces High - US East', region: 'US East', maxPlayers: 24 },
-  { name: 'Aces High - Europe', region: 'Europe', maxPlayers: 24 },
-  { name: 'Aces High - Asia', region: 'Asia', maxPlayers: 24 },
+const initialServers: Omit<Server, 'players'>[] = [
+  { id: 'europe-server', name: 'Aces High - Europe', region: 'Europe', maxPlayers: 24 },
 ];
 
 async function seedServers() {
-  const serversCollection = collection(db, 'servers');
-  const snapshot = await getDocs(serversCollection);
-  if (snapshot.empty) {
-    console.log('No servers found, seeding initial data...');
-    const batch = writeBatch(db);
-    initialServers.forEach(serverData => {
-      const serverRef = doc(serversCollection);
-      batch.set(serverRef, { ...serverData, players: 0 });
-    });
-    await batch.commit();
-    console.log('Seeding complete.');
-  }
+    console.log('Checking for servers...');
+    const serversCollection = collection(db, 'servers');
+    
+    try {
+        for (const serverData of initialServers) {
+            const serverRef = doc(db, 'servers', serverData.id);
+            const docSnap = await getDoc(serverRef);
+
+            if (!docSnap.exists()) {
+                console.log(`Server ${serverData.id} not found, seeding...`);
+                await setDoc(serverRef, { ...serverData, players: 0 });
+            }
+        }
+        console.log('Server check complete.');
+    } catch (error) {
+        console.error("Error seeding servers: ", error);
+        // This error is critical for the user to see.
+        throw new Error("Could not initialize game servers. Check Firestore permissions and configuration.");
+    }
 }
+
 
 function OnlinePageContent() {
   const router = useRouter();
@@ -52,14 +58,14 @@ function OnlinePageContent() {
   const { toast } = useToast();
 
   useEffect(() => {
-    // Seed servers once on component mount if they don't exist.
     seedServers().catch(error => {
         console.error("Failed to seed servers:", error);
         toast({
             title: "Server Initialization Failed",
-            description: "Could not prepare game servers. Please check your connection and try again.",
+            description: error.message || "Could not prepare game servers. Please check your connection and try again.",
             variant: "destructive",
         });
+        setIsLoading(false);
     });
 
     const q = query(collection(db, 'servers'));
@@ -133,7 +139,7 @@ function OnlinePageContent() {
   };
 
   return (
-    <div className="w-full max-w-2xl space-y-8">
+    <div className="w-full max-w-4xl space-y-8">
       <Card className="bg-card/80 backdrop-blur-sm border-primary/20 shadow-xl">
         <CardHeader className="text-center">
           <CardTitle className="text-4xl font-bold font-headline text-primary">Online Multiplayer</CardTitle>
@@ -160,32 +166,32 @@ function OnlinePageContent() {
                     <Loader2 className="h-8 w-8 animate-spin text-primary" />
                  </div>
               ) : servers.length === 0 ? (
-                <p className="text-center text-muted-foreground">No servers available. Please check your connection or try again later.</p>
+                <div className="text-center text-muted-foreground">
+                    <p>No servers available.</p>
+                    <p className="text-sm">This may be due to a connection issue or Firestore security rules.</p>
+                </div>
               ) : (
-                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                <div className="border rounded-lg">
                   {servers.map((server) => (
-                    <Card key={server.id} className="flex flex-col">
-                      <CardHeader className="pb-2">
-                        <CardTitle className="text-lg">{server.name}</CardTitle>
-                        <CardDescription>{server.region}</CardDescription>
-                      </CardHeader>
-                      <CardContent className="flex-grow flex items-center justify-between">
-                         <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                            <Users className="h-4 w-4" />
-                            <span>{server.players} / {server.maxPlayers}</span>
-                         </div>
-                      </CardContent>
-                      <CardFooter>
-                         <Button 
-                            className="w-full"
-                            onClick={() => handleJoinServer(server)} 
-                            disabled={isJoining === server.id || server.players >= server.maxPlayers}
-                          >
-                           {isJoining === server.id ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
-                           {server.players >= server.maxPlayers ? 'Full' : 'Join'}
-                         </Button>
-                      </CardFooter>
-                    </Card>
+                    <div key={server.id} className="flex items-center justify-between p-4 border-b last:border-b-0">
+                        <div>
+                            <p className="font-semibold text-lg">{server.name}</p>
+                            <p className="text-sm text-muted-foreground">{server.region}</p>
+                        </div>
+                        <div className="flex items-center gap-4">
+                            <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                                <Users className="h-4 w-4" />
+                                <span>{server.players} / {server.maxPlayers}</span>
+                            </div>
+                            <Button 
+                                onClick={() => handleJoinServer(server)} 
+                                disabled={isJoining === server.id || server.players >= server.maxPlayers}
+                              >
+                               {isJoining === server.id ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+                               {server.players >= server.maxPlayers ? 'Full' : 'Join'}
+                             </Button>
+                        </div>
+                    </div>
                   ))}
                 </div>
               )}
