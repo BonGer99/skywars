@@ -31,8 +31,6 @@ class Particle {
         this.lifespan--;
         this.mesh.position.add(this.velocity);
         this.velocity.multiplyScalar(0.98); // friction
-        this.mesh.material.opacity = this.lifespan / 60;
-        if (this.mesh.material.opacity < 0) this.mesh.material.opacity = 0;
     }
 }
 
@@ -110,8 +108,7 @@ export default function Game() {
             idealOffset.add(player.position);
             camera.position.copy(idealOffset);
             
-            const lookAtPoint = player.position.clone().add(new THREE.Vector3(0, 3, 20).applyQuaternion(player.quaternion));
-            camera.lookAt(lookAtPoint);
+            camera.lookAt(player.position);
         }
         
         // Clear old game objects
@@ -164,6 +161,7 @@ export default function Game() {
         const moveSpeed = 50 * throttle;
         const PITCH_SPEED = 1.0;
         const ROLL_SPEED = 1.5;
+        const MAX_SPEED = 120;
 
         if (keysPressed['w'] || keysPressed['W']) player.rotateX(PITCH_SPEED * delta);
         if (keysPressed['s'] || keysPressed['S']) player.rotateX(-PITCH_SPEED * delta);
@@ -172,6 +170,11 @@ export default function Game() {
 
         const forward = new THREE.Vector3(0, 0, 1).applyQuaternion(player.quaternion);
         playerVelocity.add(forward.multiplyScalar(delta * moveSpeed));
+
+        if (playerVelocity.length() > MAX_SPEED) {
+            playerVelocity.normalize().multiplyScalar(MAX_SPEED);
+        }
+
         playerVelocity.multiplyScalar(0.98); // Drag
         player.position.add(playerVelocity.clone().multiplyScalar(delta));
         (player as any).prop.rotation.z += delta * 20 * throttle;
@@ -180,10 +183,12 @@ export default function Game() {
         const idealOffset = new THREE.Vector3(0, 8, -25);
         idealOffset.applyQuaternion(player.quaternion);
         idealOffset.add(player.position);
-        camera.position.lerp(idealOffset, delta * 5);
         
-        const lookAtPoint = player.position.clone().add(new THREE.Vector3(0, 3, 20).applyQuaternion(player.quaternion));
-        camera.lookAt(lookAtPoint);
+        const lerpFactor = 1 - Math.exp(-10 * delta); // Frame-rate independent lerp
+        camera.position.lerp(idealOffset, lerpFactor);
+        
+        camera.lookAt(player.position);
+        camera.up.set(0, 1, 0); // Prevent camera roll
 
         // Gun logic
         gameData.current.gunCooldown = Math.max(0, gameData.current.gunCooldown - delta);
@@ -316,7 +321,7 @@ export default function Game() {
         const { scene, camera } = gameData.current;
         const renderer = new THREE.WebGLRenderer({ antialias: false });
         renderer.setSize(window.innerWidth, window.innerHeight);
-        renderer.setPixelRatio(window.devicePixelRatio);
+        renderer.setPixelRatio(1); // Performance boost
         mountRef.current.appendChild(renderer.domElement);
         gameData.current.renderer = renderer;
 
@@ -335,21 +340,21 @@ export default function Game() {
 
         // World (Clouds and Islands)
         const cloudMat = new THREE.MeshBasicMaterial({ color: 0xffffff, opacity: 0.9, transparent: true });
-        for(let i = 0; i < 20; i++) {
+        for(let i = 0; i < 50; i++) {
             const cloud = new THREE.Group();
             for(let j=0; j<5; j++) {
                 const part = new THREE.Mesh(new THREE.BoxGeometry(10,5,5), cloudMat);
                 part.position.set( (Math.random()-0.5)*15, (Math.random()-0.5)*5, (Math.random()-0.5)*15);
                 cloud.add(part);
             }
-            cloud.position.set((Math.random() - 0.5) * 1500, Math.random() * 50 + 20, (Math.random() - 0.5) * 1500);
+            cloud.position.set((Math.random() - 0.5) * 2000, Math.random() * 50 + 20, (Math.random() - 0.5) * 2000);
             scene.add(cloud);
         }
         
         const islandMat = new THREE.MeshBasicMaterial({ color: 0x8B4513 });
-         for(let i = 0; i < 5; i++) {
+         for(let i = 0; i < 10; i++) {
             const island = new THREE.Mesh(new THREE.BoxGeometry(50, 20, 50), islandMat);
-            island.position.set((Math.random() - 0.5) * 1500, Math.random() * 20 - 10, (Math.random() - 0.5) * 1500);
+            island.position.set((Math.random() - 0.5) * 2000, Math.random() * 20 - 10, (Math.random() - 0.5) * 2000);
             scene.add(island);
         }
 
