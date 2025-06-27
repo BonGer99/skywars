@@ -252,7 +252,7 @@ function OnlinePageContent() {
                             <Copy className="h-4 w-4" />
                         </Button>
                     </div>
-                     <Link href="/play" passHref className="w-full">
+                     <Link href="/online-game" passHref className="w-full">
                         <Button size="lg" className="w-full">Ready to Fly</Button>
                      </Link>
                 </div>
