@@ -1,3 +1,4 @@
+
 'use client';
 
 import Link from 'next/link';
@@ -67,10 +68,21 @@ function OnlinePageContent() {
 
     try {
       const serversCollection = collection(db, 'servers');
-      const q = query(serversCollection, where("players", "<", 24), limit(1));
-      const snapshot = await getDocs(q);
+      const snapshot = await getDocs(serversCollection);
 
       if (snapshot.empty) {
+        toast({
+            title: "No Servers Found",
+            description: "Could not find any game servers. Please try again in a moment.",
+            variant: "destructive"
+        });
+        setIsJoining(false);
+        return;
+      }
+      
+      const availableServerDoc = snapshot.docs.find(doc => doc.data().players < doc.data().maxPlayers);
+
+      if (!availableServerDoc) {
         toast({
             title: "No Available Servers",
             description: "All servers are currently full. Please try again later.",
@@ -80,8 +92,7 @@ function OnlinePageContent() {
         return;
       }
       
-      const serverDoc = snapshot.docs[0];
-      const server = { id: serverDoc.id, ...serverDoc.data() } as Server;
+      const server = { id: availableServerDoc.id, ...availableServerDoc.data() } as Server;
 
       const serverRef = doc(db, 'servers', server.id);
       const playersRef = collection(db, `servers/${server.id}/players`);
