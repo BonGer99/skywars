@@ -7,9 +7,10 @@ interface HUDProps {
   health: number;
   overheat: number;
   altitude: number;
+  mode: 'offline' | 'online';
 }
 
-export default function HUD({ score, wave, health, overheat, altitude }: HUDProps) {
+export default function HUD({ score, wave, health, overheat, altitude, mode }: HUDProps) {
   return (
     <div className="absolute top-4 left-4 right-4 text-white font-headline pointer-events-none select-none">
       <div className="flex justify-between items-start">
@@ -32,8 +33,8 @@ export default function HUD({ score, wave, health, overheat, altitude }: HUDProp
 
         <Card className="text-right bg-black/30 backdrop-blur-sm border-primary/50 text-primary-foreground p-2">
            <CardContent className="p-2 min-w-[140px] sm:min-w-[160px]">
-             <div className="text-xl sm:text-2xl font-bold">SCORE: {score}</div>
-             <div className="text-base sm:text-lg">WAVE: {wave}</div>
+             <div className="text-xl sm:text-2xl font-bold">{mode === 'online' ? 'KILLS' : 'SCORE'}: {score}</div>
+             {mode === 'offline' && <div className="text-base sm:text-lg">WAVE: {wave}</div>}
            </CardContent>
         </Card>
       </div>

@@ -3,13 +3,28 @@
 
 import * as THREE from 'three';
 import { useEffect, useRef, useState, useCallback } from 'react';
+import { useRouter } from 'next/navigation';
+import Link from 'next/link';
 import HUD from '@/components/ui/HUD';
 import { Button } from '@/components/ui/button';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { Loader2 } from 'lucide-react';
+import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
+import { Loader2, Home, Share2 } from 'lucide-react';
 import { generateOpponentBehavior, type OpponentBehaviorOutput } from '@/ai/flows/ai-opponent-behavior';
+import { AlertDialog, AlertDialogTrigger, AlertDialogContent, AlertDialogHeader, AlertDialogTitle, AlertDialogDescription, AlertDialogFooter, AlertDialogCancel } from '@/components/ui/alert-dialog';
+import { Input } from '@/components/ui/input';
+import { useToast } from "@/hooks/use-toast";
+import { db } from '@/lib/firebase';
+import { doc, runTransaction, deleteDoc } from 'firebase/firestore';
+
 
 type GameState = 'loading' | 'menu' | 'playing' | 'gameover';
+type GameMode = 'offline' | 'online';
+
+interface GameProps {
+  mode: GameMode;
+  serverId?: string;
+  playerId?: string;
+}
 
 type Bullet = {
     mesh: THREE.Mesh;
@@ -25,8 +40,10 @@ type Enemy = {
     stateTimer: number;
 };
 
-export default function Game() {
+export default function Game({ mode, serverId, playerId }: GameProps) {
     const mountRef = useRef<HTMLDivElement>(null);
+    const router = useRouter();
+    const { toast } = useToast();
 
     const [gameState, setGameState] = useState<GameState>('loading');
     const [score, setScore] = useState(0);
@@ -62,6 +79,42 @@ export default function Game() {
         setGameState('playing');
     }, []);
 
+    const handleLeaveGame = useCallback(async () => {
+        if (mode === 'online' && serverId && playerId) {
+            const serverRef = doc(db, 'servers', serverId);
+            const playerDocRef = doc(db, `servers/${serverId}/players`, playerId);
+            try {
+                await deleteDoc(playerDocRef);
+                await runTransaction(db, async (transaction) => {
+                    const serverDoc = await transaction.get(serverRef);
+                    if (serverDoc.exists()) {
+                        const newPlayerCount = Math.max(0, (serverDoc.data().players || 1) - 1);
+                        transaction.update(serverRef, { players: newPlayerCount });
+                    }
+                });
+            } catch (error) {
+                console.error("Error leaving server:", error);
+                toast({ title: "Error", description: "Could not leave the server properly.", variant: "destructive" });
+            }
+        }
+        router.push('/');
+    }, [mode, serverId, playerId, router, toast]);
+
+    const copyInviteLink = () => {
+        if (serverId) {
+            // Note: This link will only work once the simplified online page is implemented,
+            // as it relies on finding an available server. A direct join link is more complex.
+            // For now, we link to the online page.
+            const inviteLink = `${window.location.origin}/online`;
+            navigator.clipboard.writeText(inviteLink);
+            toast({
+                title: "Copied to clipboard!",
+                description: "Invite link copied. Friends can use it to join the game.",
+            });
+        }
+    };
+
+
     useEffect(() => {
         if (typeof window === 'undefined') return;
         if (!mountRef.current) return;
@@ -78,8 +131,18 @@ export default function Game() {
         const renderer = new THREE.WebGLRenderer({ antialias: false, powerPreference: "low-power" });
         
         renderer.setPixelRatio(1);
-        renderer.setSize(mount.clientWidth, mount.clientHeight);
+        
+        const handleResize = () => {
+            if (!mount) return;
+            const width = mount.clientWidth;
+            const height = mount.clientHeight;
+            camera.aspect = width / height;
+            camera.updateProjectionMatrix();
+            renderer.setSize(width, height);
+        };
+        
         mount.appendChild(renderer.domElement);
+        handleResize(); // Initial resize call
 
         const createVoxelPlane = (color: THREE.Color) => {
             const plane = new THREE.Group();
@@ -260,8 +323,6 @@ export default function Game() {
 
             setPlayerHealth(100);
             setGunOverheat(0);
-            setScore(0);
-            setWave(1);
             setAltitude(playerRef.current.position.y - ground.position.y);
             setShowAltitudeWarning(false);
             setAltitudeWarningTimer(5);
@@ -270,6 +331,14 @@ export default function Game() {
             setBoundaryWarningTimer(7);
             boundaryWarningTimerRef.current = 7;
             setWhiteoutOpacity(0);
+            
+            // Mode-specific resets
+            if (mode === 'offline') {
+                setScore(0);
+                setWave(1);
+            } else {
+                setScore(0); // In online mode, score represents kills
+            }
         };
         
         let lastTime = 0;
@@ -281,7 +350,17 @@ export default function Game() {
 
             if (gameStateRef.current === 'playing' && lastGameState !== 'playing') {
                 resetGame();
-                startNewWave(1);
+                if (mode === 'offline') {
+                    startNewWave(1);
+                } else { // Online mode
+                    // Spawn 3 bots to simulate a match
+                    setTimeout(async () => {
+                        if(gameStateRef.current !== 'playing') return;
+                        for (let i = 0; i < 3; i++) {
+                            await spawnEnemy();
+                        }
+                    }, 1000);
+                }
             }
             lastGameState = gameStateRef.current;
             
@@ -474,13 +553,14 @@ export default function Game() {
                         if (enemy.health <= 0) {
                             scene.remove(enemy.mesh);
                             enemiesRef.current.splice(j, 1);
-                            setScore(s => s + 100);
+                            setScore(s => s + 1); // 1 kill
                             
-                            if (enemiesRef.current.length === 0 && gameStateRef.current === 'playing') {
+                            if (mode === 'offline' && enemiesRef.current.length === 0 && gameStateRef.current === 'playing') {
                                 const nextWave = waveRef.current + 1;
                                 setWave(nextWave);
                                 startNewWave(nextWave);
                             }
+                            // In online mode, bots do not respawn automatically in this version
                         }
                         break;
                     }
@@ -532,20 +612,13 @@ export default function Game() {
         const handleMouseDown = (e: MouseEvent) => { if(e.button === 0) keysPressed['mouse0'] = true; };
         const handleMouseUp = (e: MouseEvent) => { if(e.button === 0) keysPressed['mouse0'] = false; };
         
-        const handleResize = () => {
-            if (!mount) return;
-            camera.aspect = mount.clientWidth / mount.clientHeight;
-            camera.updateProjectionMatrix();
-            renderer.setSize(mount.clientWidth, mount.clientHeight);
-        };
-        
         window.addEventListener('keydown', handleKeyDown);
         window.addEventListener('keyup', handleKeyUp);
         window.addEventListener('mousedown', handleMouseDown);
         window.addEventListener('mouseup', handleMouseUp);
         window.addEventListener('resize', handleResize);
         
-        setGameState('menu');
+        setGameState(mode === 'offline' ? 'menu' : 'playing');
         gameLoop(performance.now());
 
         return () => {
@@ -571,7 +644,9 @@ export default function Game() {
                 }
             });
         };
-    }, []);
+    }, [mode]);
+
+    const inviteLink = serverId ? `${typeof window !== 'undefined' ? window.location.origin : ''}/online?server=${serverId}` : '';
 
     return (
         <div className="relative w-screen h-screen bg-background overflow-hidden" onContextMenu={(e) => e.preventDefault()}>
@@ -588,8 +663,41 @@ export default function Game() {
                     <p className="text-xl mt-4 font-headline">Loading Voxel Skies...</p>
                 </div>
             )}
+            
+            {gameState === 'playing' && mode === 'online' && (
+                <div className="absolute top-4 right-4 z-20 flex flex-col items-end gap-2">
+                    <AlertDialog>
+                        <AlertDialogTrigger asChild>
+                            <Button variant="outline" size="icon" className="h-10 w-10 rounded-full bg-black/30 text-white border-primary/50 backdrop-blur-sm hover:bg-primary/50">
+                                <Share2 className="h-5 w-5"/>
+                                <span className="sr-only">Invite</span>
+                            </Button>
+                        </AlertDialogTrigger>
+                        <AlertDialogContent>
+                            <AlertDialogHeader>
+                                <AlertDialogTitle>Invite Your Squadron</AlertDialogTitle>
+                                <AlertDialogDescription>
+                                    Share this link with friends. They will join the first available server.
+                                </AlertDialogDescription>
+                            </AlertDialogHeader>
+                            <div className="flex items-center space-x-2">
+                                <Input value={inviteLink} readOnly />
+                                <Button onClick={copyInviteLink}>Copy</Button>
+                            </div>
+                            <AlertDialogFooter>
+                                <AlertDialogCancel>Close</AlertDialogCancel>
+                            </AlertDialogFooter>
+                        </AlertDialogContent>
+                    </AlertDialog>
+                    <Button onClick={handleLeaveGame} variant="outline" size="icon" className="h-10 w-10 rounded-full bg-black/30 text-white border-primary/50 backdrop-blur-sm hover:bg-destructive/50">
+                        <Home className="h-5 w-5"/>
+                        <span className="sr-only">Home</span>
+                    </Button>
+                </div>
+            )}
 
-            {gameState === 'menu' && (
+
+            {gameState === 'menu' && mode === 'offline' && (
                  <div className="absolute inset-0 flex items-center justify-center z-10">
                     <Card className="max-w-md mx-auto bg-card/80 backdrop-blur-sm border-primary/20 shadow-xl text-center">
                         <CardHeader><CardTitle className="text-5xl font-bold font-headline text-primary">Ready for Takeoff?</CardTitle></CardHeader>
@@ -629,16 +737,19 @@ export default function Game() {
                 </div>
             )}
 
-            {gameState === 'playing' && <HUD score={score} wave={wave} health={playerHealth} overheat={gunOverheat} altitude={altitude} />}
+            {gameState === 'playing' && <HUD score={score} wave={wave} health={playerHealth} overheat={gunOverheat} altitude={altitude} mode={mode} />}
 
             {gameState === 'gameover' && (
                 <div className="absolute inset-0 flex items-center justify-center bg-black/50 z-10">
                      <Card className="max-w-md mx-auto bg-card/80 backdrop-blur-sm border-destructive/50 shadow-xl text-center">
                         <CardHeader><CardTitle className="text-5xl font-bold font-headline text-destructive">Game Over</CardTitle></CardHeader>
                         <CardContent className="p-8 pt-0">
-                            <p className="text-foreground mb-2">You survived to <span className="font-bold text-accent">Wave {wave}</span></p>
-                            <p className="text-foreground mb-6">Final Score: <span className="font-bold text-accent">{score}</span></p>
+                            {mode === 'offline' && <p className="text-foreground mb-2">You survived to <span className="font-bold text-accent">Wave {wave}</span></p> }
+                            <p className="text-foreground mb-6">Final {mode === 'online' ? 'Kills' : 'Score'}: <span className="font-bold text-accent">{score}</span></p>
                             <Button size="lg" className="w-full text-lg py-6" onClick={startGame}>Play Again</Button>
+                             {mode === 'online' && (
+                                <Button size="lg" variant="secondary" className="w-full text-lg py-6 mt-2" onClick={handleLeaveGame}>Back to Menu</Button>
+                            )}
                         </CardContent>
                     </Card>
                 </div>
