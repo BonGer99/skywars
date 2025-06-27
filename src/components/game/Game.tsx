@@ -7,8 +7,21 @@ import HUD from '@/components/ui/HUD';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Loader2 } from 'lucide-react';
+import { generateOpponentBehavior, type OpponentBehaviorOutput } from '@/ai/flows/ai-opponent-behavior';
 
 type GameState = 'loading' | 'menu' | 'playing' | 'gameover';
+
+type Bullet = {
+    mesh: THREE.Mesh;
+    velocity: THREE.Vector3;
+};
+
+type Enemy = {
+    mesh: THREE.Group;
+    health: number;
+    behavior: OpponentBehaviorOutput;
+    gunCooldown: number;
+};
 
 export default function Game() {
     const mountRef = useRef<HTMLDivElement>(null);
@@ -25,6 +38,10 @@ export default function Game() {
     
     const gameStateRef = useRef(gameState);
     const altitudeWarningTimerRef = useRef(5);
+    const playerBulletsRef = useRef<Bullet[]>([]);
+    const enemyBulletsRef = useRef<Bullet[]>([]);
+    const enemiesRef = useRef<Enemy[]>([]);
+    const sceneRef = useRef<THREE.Scene | null>(null);
 
     useEffect(() => {
       gameStateRef.current = gameState;
@@ -41,6 +58,7 @@ export default function Game() {
         let animationFrameId: number;
 
         const scene = new THREE.Scene();
+        sceneRef.current = scene;
         scene.background = new THREE.Color(0x87CEEB); 
 
         const camera = new THREE.PerspectiveCamera(75, mount.clientWidth / mount.clientHeight, 0.1, 4000);
@@ -92,7 +110,6 @@ export default function Game() {
         ground.position.y = -50;
         scene.add(ground);
 
-        // Add lakes
         for (let i = 0; i < 4; i++) {
             const lakeGeo = new THREE.PlaneGeometry(Math.random() * 150 + 50, Math.random() * 150 + 50);
             const lakeMat = new THREE.MeshLambertMaterial({ color: 0x3d85c6, flatShading: true });
@@ -106,7 +123,6 @@ export default function Game() {
             scene.add(lake);
         }
 
-        // Add trees
         const createTree = (x: number, z: number) => {
             const tree = new THREE.Group();
             
@@ -126,7 +142,6 @@ export default function Game() {
             scene.add(tree);
         };
         
-        // Add bushes
         const createBush = (x: number, z: number) => {
             const bushGeo = new THREE.BoxGeometry(7, 7, 7);
             const bushMat = new THREE.MeshLambertMaterial({ color: 0x556B2F, flatShading: true });
@@ -164,17 +179,55 @@ export default function Game() {
 
 
         const keysPressed: Record<string, boolean> = {};
-        const bullets: { mesh: THREE.Mesh, velocity: THREE.Vector3 }[] = [];
         let gunCooldown = 0;
         
         let lastGameState = gameStateRef.current;
         
+        const spawnEnemy = async () => {
+            if (!sceneRef.current) return;
+
+            try {
+                const behavior = await generateOpponentBehavior({
+                    waveNumber: wave,
+                    playerSkillLevel: 'intermediate',
+                });
+
+                const enemyMesh = createVoxelPlane(new THREE.Color(0xff0000));
+                
+                const spawnAngle = Math.random() * Math.PI * 2;
+                const spawnDist = 400 + Math.random() * 200;
+                enemyMesh.position.set(
+                    player.position.x + Math.sin(spawnAngle) * spawnDist,
+                    player.position.y + (Math.random() - 0.5) * 50,
+                    player.position.z + Math.cos(spawnAngle) * spawnDist
+                );
+                sceneRef.current.add(enemyMesh);
+
+                const newEnemy: Enemy = {
+                    mesh: enemyMesh,
+                    health: 100,
+                    behavior,
+                    gunCooldown: 2 + Math.random() * 2,
+                };
+                
+                enemiesRef.current.push(newEnemy);
+            } catch (error) {
+                console.error("Failed to spawn enemy:", error);
+            }
+        };
+
         const resetGame = () => {
             player.position.set(0, 20, 0);
             player.rotation.set(0, 0, 0);
             player.quaternion.set(0, 0, 0, 1);
-            bullets.forEach(b => scene.remove(b.mesh));
-            bullets.length = 0;
+            
+            playerBulletsRef.current.forEach(b => scene.remove(b.mesh));
+            playerBulletsRef.current = [];
+            enemyBulletsRef.current.forEach(b => scene.remove(b.mesh));
+            enemyBulletsRef.current = [];
+            enemiesRef.current.forEach(e => scene.remove(e.mesh));
+            enemiesRef.current = [];
+
             setPlayerHealth(100);
             setGunOverheat(0);
             setScore(0);
@@ -184,6 +237,8 @@ export default function Game() {
             setAltitudeWarningTimer(5);
             setWhiteoutOpacity(0);
             altitudeWarningTimerRef.current = 5;
+
+            spawnEnemy();
         };
         
         let lastTime = 0;
@@ -271,22 +326,92 @@ export default function Game() {
                             bullet.position.copy(bulletPos);
                             bullet.quaternion.copy(player.quaternion);
                             const bulletWorldVelocity = new THREE.Vector3(0, 0, -200).applyQuaternion(player.quaternion);
-                            bullets.push({ mesh: bullet, velocity: bulletWorldVelocity });
+                            playerBulletsRef.current.push({ mesh: bullet, velocity: bulletWorldVelocity });
                             scene.add(bullet);
                             return o + 5;
                         }
                         return o;
                     });
                 }
+
+                // AI Logic
+                enemiesRef.current.forEach(enemy => {
+                    const enemySpeed = 25; // Can be tied to behavior.difficultyLevel
+                    const targetQuaternion = new THREE.Quaternion();
+                    const tempMatrix = new THREE.Matrix4();
+                    tempMatrix.lookAt(enemy.mesh.position, player.position, enemy.mesh.up);
+                    targetQuaternion.setFromRotationMatrix(tempMatrix);
+                    enemy.mesh.quaternion.slerp(targetQuaternion, 0.02);
+                    
+                    const enemyForward = new THREE.Vector3(0, 0, 1).applyQuaternion(enemy.mesh.quaternion);
+                    enemy.mesh.position.add(enemyForward.multiplyScalar(enemySpeed * delta));
+
+                    enemy.gunCooldown -= delta;
+                    if (enemy.gunCooldown <= 0) {
+                        enemy.gunCooldown = 2.0;
+                        const bulletOffset = new THREE.Vector3(0, 0, 2).applyQuaternion(enemy.mesh.quaternion);
+                        const bulletPos = enemy.mesh.position.clone().add(bulletOffset);
+                        const bulletGeo = new THREE.BoxGeometry(0.3, 0.3, 1.5);
+                        const bulletMat = new THREE.MeshBasicMaterial({ color: 0xff00ff });
+                        const bullet = new THREE.Mesh(bulletGeo, bulletMat);
+                        bullet.position.copy(bulletPos);
+                        bullet.quaternion.copy(enemy.mesh.quaternion);
+                        const bulletWorldVelocity = new THREE.Vector3(0, 0, 200).applyQuaternion(enemy.mesh.quaternion);
+                        enemyBulletsRef.current.push({ mesh: bullet, velocity: bulletWorldVelocity });
+                        scene.add(bullet);
+                    }
+                });
             }
 
-            bullets.forEach((b, i) => {
+            // Update and check collisions for player bullets
+            for (let i = playerBulletsRef.current.length - 1; i >= 0; i--) {
+                const b = playerBulletsRef.current[i];
                 b.mesh.position.add(b.velocity.clone().multiplyScalar(delta));
-                if (b.mesh.position.distanceTo(player.position) > 2000) {
-                    scene.remove(b.mesh);
-                    bullets.splice(i, 1);
+
+                let hit = false;
+                for (let j = enemiesRef.current.length - 1; j >= 0; j--) {
+                    const enemy = enemiesRef.current[j];
+                    if (b.mesh.position.distanceTo(enemy.mesh.position) < 5) {
+                        hit = true;
+                        enemy.health -= 25;
+                        if (enemy.health <= 0) {
+                            scene.remove(enemy.mesh);
+                            enemiesRef.current.splice(j, 1);
+                            setScore(s => s + 100);
+                            setTimeout(spawnEnemy, 3000); // Respawn after 3 seconds
+                        }
+                        break;
+                    }
                 }
-            });
+
+                if (hit || b.mesh.position.distanceTo(player.position) > 2000) {
+                    scene.remove(b.mesh);
+                    playerBulletsRef.current.splice(i, 1);
+                }
+            }
+
+            // Update and check collisions for enemy bullets
+            for (let i = enemyBulletsRef.current.length - 1; i >= 0; i--) {
+                const b = enemyBulletsRef.current[i];
+                b.mesh.position.add(b.velocity.clone().multiplyScalar(delta));
+                
+                let hit = false;
+                if (b.mesh.position.distanceTo(player.position) < 5) {
+                    hit = true;
+                    setPlayerHealth(h => {
+                        const newHealth = Math.max(0, h - 10);
+                        if (newHealth <= 0 && gameStateRef.current === 'playing') {
+                            setGameState('gameover');
+                        }
+                        return newHealth;
+                    });
+                }
+
+                if (hit || b.mesh.position.distanceTo(player.position) > 2000) {
+                    scene.remove(b.mesh);
+                    enemyBulletsRef.current.splice(i, 1);
+                }
+            }
 
             const idealOffset = cameraOffset.clone();
             idealOffset.applyQuaternion(player.quaternion);
@@ -339,7 +464,7 @@ export default function Game() {
                 }
             });
         };
-    }, []);
+    }, [wave]);
 
     return (
         <div className="relative w-screen h-screen bg-background overflow-hidden" onContextMenu={(e) => e.preventDefault()}>
@@ -347,7 +472,7 @@ export default function Game() {
             
             <div 
                 className="absolute inset-0 bg-white z-10 pointer-events-none"
-                style={{ opacity: whiteoutOpacity }}
+                style={{ opacity: whiteoutOpacity, transition: 'opacity 0.5s' }}
             />
 
             {gameState === 'loading' && (
