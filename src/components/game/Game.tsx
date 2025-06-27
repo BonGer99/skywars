@@ -470,7 +470,7 @@ export default function Game() {
                     const enemy = enemiesRef.current[j];
                     if (b.mesh.position.distanceTo(enemy.mesh.position) < 5) {
                         hit = true;
-                        enemy.health -= 25;
+                        enemy.health -= 10;
                         if (enemy.health <= 0) {
                             scene.remove(enemy.mesh);
                             enemiesRef.current.splice(j, 1);

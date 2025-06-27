@@ -34,10 +34,12 @@ export default function MainMenu() {
               Play Offline
             </Button>
           </Link>
-          <Button className="w-full text-lg py-6" size="lg" variant="secondary" disabled>
-            <Users className="mr-2 h-6 w-6" />
-            Play Online
-          </Button>
+          <Link href="/online" passHref>
+            <Button className="w-full text-lg py-6" size="lg" variant="secondary">
+              <Users className="mr-2 h-6 w-6" />
+              Play Online
+            </Button>
+          </Link>
           <Button className="w-full text-lg py-6" size="lg" variant="secondary" disabled>
              <div className="w-6 h-6 mr-2 flex items-center justify-center">
                 <HangarIcon />
