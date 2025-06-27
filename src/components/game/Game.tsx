@@ -21,6 +21,8 @@ type Enemy = {
     health: number;
     behavior: OpponentBehaviorOutput;
     gunCooldown: number;
+    state: 'attacking' | 'flyby';
+    stateTimer: number;
 };
 
 export default function Game() {
@@ -212,6 +214,8 @@ export default function Game() {
                     health: 100,
                     behavior,
                     gunCooldown: 2 + Math.random() * 2,
+                    state: 'attacking',
+                    stateTimer: 0,
                 };
                 
                 enemiesRef.current.push(newEnemy);
@@ -365,18 +369,37 @@ export default function Game() {
                 // AI Logic
                 enemiesRef.current.forEach(enemy => {
                     if (!playerRef.current) return;
-                    const enemySpeed = 25;
-                    const targetQuaternion = new THREE.Quaternion();
-                    const tempMatrix = new THREE.Matrix4();
-                    tempMatrix.lookAt(enemy.mesh.position, playerRef.current.position, enemy.mesh.up);
-                    targetQuaternion.setFromRotationMatrix(tempMatrix);
-                    enemy.mesh.quaternion.slerp(targetQuaternion, 0.02);
+
+                    const distanceToPlayer = enemy.mesh.position.distanceTo(playerRef.current.position);
+                    enemy.stateTimer -= delta;
+
+                    // State transition logic
+                    if (enemy.state === 'attacking' && distanceToPlayer < 200) {
+                        enemy.state = 'flyby';
+                        enemy.stateTimer = 3 + Math.random() * 2; // Fly straight for 3-5 seconds
+                    } else if (enemy.state === 'flyby' && enemy.stateTimer <= 0) {
+                        enemy.state = 'attacking';
+                    }
+
+                    // Movement logic
+                    if (enemy.state === 'attacking') {
+                        const targetQuaternion = new THREE.Quaternion();
+                        const tempMatrix = new THREE.Matrix4();
+                        tempMatrix.lookAt(enemy.mesh.position, playerRef.current.position, enemy.mesh.up);
+                        targetQuaternion.setFromRotationMatrix(tempMatrix);
+                        enemy.mesh.quaternion.slerp(targetQuaternion, 0.02);
+                    }
                     
+                    const enemySpeed = 25;
                     const enemyForward = new THREE.Vector3(0, 0, -1).applyQuaternion(enemy.mesh.quaternion);
                     enemy.mesh.position.add(enemyForward.multiplyScalar(enemySpeed * delta));
 
+                    // Shooting logic
                     enemy.gunCooldown -= delta;
-                    if (enemy.gunCooldown <= 0) {
+                    const vectorToPlayer = playerRef.current.position.clone().sub(enemy.mesh.position).normalize();
+                    const dotProduct = enemyForward.dot(vectorToPlayer);
+
+                    if (enemy.gunCooldown <= 0 && dotProduct > 0.95 && enemy.state === 'attacking') { // Only shoot when facing player and attacking
                         enemy.gunCooldown = 2.0;
                         const bulletOffset = new THREE.Vector3(0, 0, -2).applyQuaternion(enemy.mesh.quaternion);
                         const bulletPos = enemy.mesh.position.clone().add(bulletOffset);
