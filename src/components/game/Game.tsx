@@ -105,10 +105,13 @@ export default function Game() {
             gameData.current.playerVelocity.set(0, 0, 0);
             
             const { camera, player } = gameData.current;
-            const idealOffset = new THREE.Vector3(0, 4, -10);
+            const idealOffset = new THREE.Vector3(0, 6, -18);
+            idealOffset.applyQuaternion(player.quaternion);
             idealOffset.add(player.position);
             camera.position.copy(idealOffset);
-            camera.lookAt(player.position);
+            
+            const lookAtPoint = player.position.clone().add(new THREE.Vector3(0, 0, 10).applyQuaternion(player.quaternion));
+            camera.lookAt(lookAtPoint);
         }
         
         // Clear old game objects
@@ -174,11 +177,13 @@ export default function Game() {
         (player as any).prop.rotation.z += delta * 20 * throttle;
 
         // Camera follow
-        const idealOffset = new THREE.Vector3(0, 4, -10);
+        const idealOffset = new THREE.Vector3(0, 6, -18);
         idealOffset.applyQuaternion(player.quaternion);
         idealOffset.add(player.position);
         camera.position.lerp(idealOffset, delta * 5);
-        camera.lookAt(player.position);
+        
+        const lookAtPoint = player.position.clone().add(new THREE.Vector3(0, 0, 10).applyQuaternion(player.quaternion));
+        camera.lookAt(lookAtPoint);
 
         // Gun logic
         gameData.current.gunCooldown = Math.max(0, gameData.current.gunCooldown - delta);
