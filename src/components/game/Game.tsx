@@ -46,6 +46,30 @@ type OtherPlayer = {
     health: number;
 };
 
+const createVoxelPlane = (color: THREE.Color) => {
+    const plane = new THREE.Group();
+    const bodyMat = new THREE.MeshLambertMaterial({ color, flatShading: true });
+    
+    const body = new THREE.Mesh(new THREE.BoxGeometry(1.5, 1, 4), bodyMat);
+    plane.add(body);
+
+    const wings = new THREE.Mesh(new THREE.BoxGeometry(8, 0.4, 1.5), bodyMat);
+    wings.position.y = 0.2;
+    plane.add(wings);
+    
+    const tail = new THREE.Mesh(new THREE.BoxGeometry(3, 0.2, 1), bodyMat);
+    tail.position.set(0, 0.2, -2.5);
+    plane.add(tail);
+    
+    const cockpitGeo = new THREE.BoxGeometry(0.8, 0.6, 1);
+    const cockpitMat = new THREE.MeshLambertMaterial({ color: 0x000000, flatShading: true });
+    const cockpit = new THREE.Mesh(cockpitGeo, cockpitMat);
+    cockpit.position.set(0, 0.8, -0.5);
+    plane.add(cockpit);
+    
+    return plane;
+};
+
 export default function Game({ mode, serverId: serverIdProp, playerName: playerNameProp }: GameProps) {
     const mountRef = useRef<HTMLDivElement>(null);
     const router = useRouter();
@@ -60,7 +84,7 @@ export default function Game({ mode, serverId: serverIdProp, playerName: playerN
     const [playerHealth, setPlayerHealth] = useState(100);
     const [gunOverheat, setGunOverheat] = useState(0);
     const [altitude, setAltitude] = useState(0);
-    const [showAltitudeWarning, setShowAltitudeWarning] = useState(false);
+    const [showAltitudeWarning, setShowAltitudeWarning] = useState(showAltitudeWarning);
     const [altitudeWarningTimer, setAltitudeWarningTimer] = useState(5);
     const [showBoundaryWarning, setShowBoundaryWarning] = useState(false);
     const [boundaryWarningTimer, setBoundaryWarningTimer] = useState(7);
@@ -257,30 +281,6 @@ export default function Game({ mode, serverId: serverIdProp, playerName: playerN
         
         mount.appendChild(renderer.domElement);
         handleResize();
-
-        const createVoxelPlane = (color: THREE.Color) => {
-            const plane = new THREE.Group();
-            const bodyMat = new THREE.MeshLambertMaterial({ color, flatShading: true });
-            
-            const body = new THREE.Mesh(new THREE.BoxGeometry(1.5, 1, 4), bodyMat);
-            plane.add(body);
-
-            const wings = new THREE.Mesh(new THREE.BoxGeometry(8, 0.4, 1.5), bodyMat);
-            wings.position.y = 0.2;
-            plane.add(wings);
-            
-            const tail = new THREE.Mesh(new THREE.BoxGeometry(3, 0.2, 1), bodyMat);
-            tail.position.set(0, 0.2, -2.5);
-            plane.add(tail);
-            
-            const cockpitGeo = new THREE.BoxGeometry(0.8, 0.6, 1);
-            const cockpitMat = new THREE.MeshLambertMaterial({ color: 0x000000, flatShading: true });
-            const cockpit = new THREE.Mesh(cockpitGeo, cockpitMat);
-            cockpit.position.set(0, 0.8, -0.5);
-            plane.add(cockpit);
-            
-            return plane;
-        };
         
         const player = createVoxelPlane(new THREE.Color(0x0077ff));
         playerRef.current = player;
@@ -834,3 +834,5 @@ export default function Game({ mode, serverId: serverIdProp, playerName: playerN
         </div>
     );
 }
+
+    
