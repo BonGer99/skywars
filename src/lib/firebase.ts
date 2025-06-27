@@ -2,16 +2,14 @@
 import { initializeApp, getApps, getApp } from "firebase/app";
 import { getFirestore } from "firebase/firestore";
 
-// Your web app's Firebase configuration will be loaded from .env variables.
-// Make sure to set these in your environment.
-// For Firebase JS SDK v7.20.0 and later, measurementId is optional
+// Your web app's Firebase configuration is now hardcoded here.
 const firebaseConfig = {
-  apiKey: process.env.NEXT_PUBLIC_FIREBASE_API_KEY,
-  authDomain: process.env.NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN,
-  projectId: process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID,
-  storageBucket: process.env.NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET,
-  messagingSenderId: process.env.NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID,
-  appId: process.env.NEXT_PUBLIC_FIREBASE_APP_ID
+  apiKey: "AIzaSyBO0bk31m7aenlOFtmRLi-ldenzCq2DPxM",
+  authDomain: "voxel-aces.firebaseapp.com",
+  projectId: "voxel-aces",
+  storageBucket: "voxel-aces.appspot.com",
+  messagingSenderId: "438756648013",
+  appId: "1:438756648013:web:26aa83ff80a91064b66804"
 };
 
 // Initialize Firebase
