@@ -23,7 +23,7 @@ class Particle {
         this.mesh = new THREE.Mesh(geometry, material);
         this.mesh.position.copy(position);
         this.velocity = velocity;
-        this.lifespan = Math.random() * 30 + 15; // 0.25 to 0.75 seconds
+        this.lifespan = Math.random() * 15 + 8; // Shorter lifespan
         scene.add(this.mesh);
     }
 
@@ -45,7 +45,8 @@ export default function Game() {
 
     const gameData = useRef({
         scene: new THREE.Scene(),
-        camera: new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 2000),
+        // Initialize with a default aspect ratio to avoid using `window` on the server
+        camera: new THREE.PerspectiveCamera(75, 1, 0.1, 2000),
         renderer: null as THREE.WebGLRenderer | null,
         player: null as THREE.Group | null,
         enemies: [] as { mesh: THREE.Group, health: number, behavior: OpponentBehaviorOutput, timeSinceShot: number }[],
@@ -63,6 +64,9 @@ export default function Game() {
     });
 
     const spawnWave = useCallback(async (waveNumber: number) => {
+        // AI is disabled for now
+        return;
+        
         setWave(waveNumber);
         const numEnemies = 2 + Math.floor(waveNumber / 2);
         
@@ -101,14 +105,6 @@ export default function Game() {
             gameData.current.player.position.set(0, 5, 0);
             gameData.current.player.rotation.set(0, 0, 0);
             gameData.current.playerVelocity.set(0, 0, 0);
-            
-            const { camera, player } = gameData.current;
-            const idealOffset = new THREE.Vector3(0, 15, -50);
-            idealOffset.applyQuaternion(player.quaternion);
-            idealOffset.add(player.position);
-            camera.position.copy(idealOffset);
-            
-            camera.lookAt(player.position);
         }
         
         // Clear old game objects
@@ -116,8 +112,11 @@ export default function Game() {
         gameData.current.enemies = [];
         gameData.current.bullets.forEach(b => gameData.current.scene.remove(b.mesh));
         gameData.current.bullets = [];
+
+        // Start spawning waves
+        spawnWave(1);
         
-    }, []);
+    }, [spawnWave]);
 
     const createVoxelPlane = (color: THREE.Color) => {
         const plane = new THREE.Group();
@@ -149,11 +148,11 @@ export default function Game() {
         if (!player) return;
 
         // Player controls
-        const throttle = 0.7; // Constant throttle
+        const throttle = 0.7; 
         const moveSpeed = 50 * throttle;
         const PITCH_SPEED = 1.0;
         const ROLL_SPEED = 1.5;
-        const MAX_SPEED = 120;
+        const MAX_SPEED = 80; // Capped player speed
 
         if (keysPressed['w'] || keysPressed['W']) player.rotateX(PITCH_SPEED * delta);
         if (keysPressed['s'] || keysPressed['S']) player.rotateX(-PITCH_SPEED * delta);
@@ -171,15 +170,16 @@ export default function Game() {
         player.position.add(playerVelocity.clone().multiplyScalar(delta));
         
         // Camera follow
-        const idealOffset = new THREE.Vector3(0, 15, -50);
+        const idealOffset = new THREE.Vector3(0, 20, -60); // Pulled camera back and up
         const idealPosition = player.position.clone().add(idealOffset);
-
-        const lerpFactor = 1 - Math.exp(-5 * delta);
+        
+        const lerpFactor = 1 - Math.exp(-4 * delta);
         camera.position.lerp(idealPosition, lerpFactor);
         
-        const lookAtPoint = player.position.clone().add(new THREE.Vector3(0, 0, 50).applyQuaternion(player.quaternion));
+        const lookAtPoint = player.position.clone().add(new THREE.Vector3(0, 5, 0)); // Look slightly above the plane
         camera.lookAt(lookAtPoint);
-        camera.quaternion.copy(player.quaternion);
+        // Removed camera roll for stability
+        camera.rotation.z = 0;
 
 
         // Gun logic
@@ -246,12 +246,17 @@ export default function Game() {
                     if (enemyBox.intersectsBox(bulletBox)) {
                         gameData.current.scene.remove(bullet.mesh);
                         gameData.current.bullets.splice(bulletIndex, 1);
-                        enemy.health -= 10;
+                        enemy.health -= 25; // More damage
                         if(enemy.health <= 0) {
                             createExplosion(enemy.mesh.position);
                             gameData.current.scene.remove(enemy.mesh);
                             gameData.current.enemies.splice(enemyIndex, 1);
                             setScore(s => s + 100);
+                            
+                            // Check for next wave
+                            if (gameData.current.enemies.length === 0) {
+                                spawnWave(wave + 1);
+                            }
                         }
                     }
                 }
@@ -287,11 +292,11 @@ export default function Game() {
         
         gameData.current.renderer?.render(gameData.current.scene, camera);
         requestAnimationFrame(gameLoop);
-    }, [gameState, playerHealth, gunOverheat, wave]);
+    }, [gameState, playerHealth, gunOverheat, wave, spawnWave]);
 
     const createExplosion = (position: THREE.Vector3) => {
         gameData.current.sounds.explosion?.triggerAttackRelease("2n");
-        for (let i = 0; i < 5; i++) {
+        for (let i = 0; i < 20; i++) { // Reduced particle count
             const velocity = new THREE.Vector3(
                 (Math.random() - 0.5) * 0.5,
                 (Math.random() - 0.5) * 0.5,
@@ -307,6 +312,9 @@ export default function Game() {
 
         const { scene, camera } = gameData.current;
         const renderer = new THREE.WebGLRenderer({ antialias: false });
+        // Set size and aspect ratio here, inside useEffect, to access window object
+        camera.aspect = window.innerWidth / window.innerHeight;
+        camera.updateProjectionMatrix();
         renderer.setSize(window.innerWidth, window.innerHeight);
         renderer.setPixelRatio(1); // Performance boost
         mountRef.current.appendChild(renderer.domElement);
@@ -324,9 +332,9 @@ export default function Game() {
 
         // World (Clouds and Islands)
         const cloudMat = new THREE.MeshBasicMaterial({ color: 0xffffff });
-        for(let i = 0; i < 8; i++) {
+        for(let i = 0; i < 20; i++) { // Reduced cloud count
             const cloud = new THREE.Group();
-            for(let j=0; j<5; j++) {
+            for(let j=0; j<3; j++) { // Simplified clouds
                 const part = new THREE.Mesh(new THREE.BoxGeometry(10,5,5), cloudMat);
                 part.position.set( (Math.random()-0.5)*15, (Math.random()-0.5)*5, (Math.random()-0.5)*15);
                 cloud.add(part);
@@ -336,7 +344,7 @@ export default function Game() {
         }
         
         const islandMat = new THREE.MeshBasicMaterial({ color: 0x8B4513 });
-         for(let i = 0; i < 2; i++) {
+         for(let i = 0; i < 5; i++) { // Reduced island count
             const island = new THREE.Mesh(new THREE.BoxGeometry(50, 20, 50), islandMat);
             island.position.set((Math.random() - 0.5) * 2000, Math.random() * 20 - 10, (Math.random() - 0.5) * 2000);
             scene.add(island);
@@ -364,9 +372,11 @@ export default function Game() {
             gameData.current.mousePosition.y = -(e.clientY / window.innerHeight) * 2 + 1;
         };
         const handleResize = () => {
-            camera.aspect = window.innerWidth / window.innerHeight;
-            camera.updateProjectionMatrix();
-            renderer.setSize(window.innerWidth, window.innerHeight);
+            if (gameData.current.renderer) {
+                camera.aspect = window.innerWidth / window.innerHeight;
+                camera.updateProjectionMatrix();
+                gameData.current.renderer.setSize(window.innerWidth, window.innerHeight);
+            }
         };
         
         window.addEventListener('keydown', handleKeyDown);
@@ -385,7 +395,9 @@ export default function Game() {
             window.removeEventListener('mouseup', handleMouseUp);
             window.removeEventListener('mousemove', handleMouseMove);
             window.removeEventListener('resize', handleResize);
-            mountRef.current?.removeChild(renderer.domElement);
+            if(mountRef.current && gameData.current.renderer) {
+                mountRef.current.removeChild(gameData.current.renderer.domElement);
+            }
             gameData.current.renderer = null;
         };
     }, []);
@@ -414,9 +426,9 @@ export default function Game() {
                             <CardTitle className="text-5xl font-bold font-headline text-primary">Ready for Takeoff?</CardTitle>
                         </CardHeader>
                         <CardContent className="p-8 pt-0">
-                            <p className="text-muted-foreground mb-6">Use your WASD keys to steer, and Left Click or Space to fire. Survive the incoming waves!</p>
+                            <p className="text-muted-foreground mb-6">Use your WASD keys to steer, and Left Click or Space to fire. Good luck!</p>
                             <Button size="lg" className="w-full text-lg py-6" onClick={startGame}>
-                                Start Survival Mode
+                                Start Flight
                             </Button>
                         </CardContent>
                     </Card>
@@ -446,5 +458,3 @@ export default function Game() {
         </div>
     );
 }
-
-    
