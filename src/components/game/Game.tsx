@@ -22,7 +22,7 @@ const PITCH_SPEED = 1.2;
 const ROLL_SPEED = 1.5;
 const BULLET_SPEED = 200;
 const BULLET_LIFESPAN_MS = 5000;
-const INTERPOLATION_FACTOR = 0.1;
+const INTERPOLATION_FACTOR = 0.2;
 
 const createVoxelPlane = (color: THREE.ColorRepresentation) => {
     const plane = new THREE.Group();
@@ -93,6 +93,22 @@ export default function Game({ mode, playerName: playerNameProp }: GameProps) {
       router.push('/');
     }, [router]);
 
+    const handlePlayAgain = useCallback(() => {
+        if (mode === 'online') {
+            const room = roomRef.current;
+            if (room) {
+                room.send("respawn");
+                setGameStatus('playing');
+                altitudeWarningTimerRef.current = 5;
+                boundaryWarningTimerRef.current = 7;
+            }
+        } else {
+            // This is a bit of a hack to force a re-render and re-init of the game
+            router.push('/play?t=' + new Date().getTime());
+        }
+    }, [mode, router]);
+
+
     useEffect(() => {
         if (typeof window === 'undefined' || !mountRef.current) return;
 
@@ -111,7 +127,7 @@ export default function Game({ mode, playerName: playerNameProp }: GameProps) {
 
         // Offline state
         const offlinePlayer = {
-            position: new THREE.Vector3(0, 50, 0),
+            position: new THREE.Vector3(200, 50, 200), // Safer spawn point
             quaternion: new THREE.Quaternion(),
             gunCooldown: 0,
             gunOverheat: 0,
@@ -151,58 +167,61 @@ export default function Game({ mode, playerName: playerNameProp }: GameProps) {
             ground.rotation.x = -Math.PI / 2;
             ground.position.y = GROUND_Y;
             scene.add(ground);
-
-            const createMountain = () => {
-                const mountain = new THREE.Group();
+            collidableObjects.push(new THREE.Box3().setFromObject(ground));
+            
+            // Regenerate world with seed
+            seed = WORLD_SEED; 
+            // Generate mountains
+            for (let i = 0; i < 20; i++) {
+                const mountainPosX = (seededRandom() - 0.5) * 1800;
+                const mountainPosZ = (seededRandom() - 0.5) * 1800;
                 const layers = Math.floor(seededRandom() * 5) + 3;
                 let baseRadius = seededRandom() * 50 + 40;
                 let currentY = GROUND_Y;
-                for (let i = 0; i < layers; i++) {
+
+                for (let j = 0; j < layers; j++) {
                     const height = seededRandom() * 30 + 20;
-                    const radius = baseRadius * ((layers - i) / layers);
-                    const isTopLayer = i === layers - 1;
+                    const radius = baseRadius * ((layers - j) / layers);
+                    const isTopLayer = j === layers - 1;
                     const matColor = isTopLayer ? 0x228B22 : 0x6A6A6A; // Green top
                     const geo = new THREE.CylinderGeometry(radius * 0.7, radius, height, 8);
                     const mat = new THREE.MeshLambertMaterial({ color: matColor, flatShading: true });
                     const mesh = new THREE.Mesh(geo, mat);
-                    mesh.position.y = currentY + height / 2;
-                    mountain.add(mesh);
+                    mesh.position.set(mountainPosX, currentY + height / 2, mountainPosZ);
+                    scene.add(mesh);
+                    collidableObjects.push(new THREE.Box3().setFromObject(mesh));
                     currentY += height * 0.8;
                 }
-                const box = new THREE.Box3().setFromObject(mountain);
-                collidableObjects.push(box);
-                return mountain;
             }
-            
-            const createTree = () => {
-                const tree = new THREE.Group();
+             // Generate trees
+            for (let i = 0; i < 50; i++) {
                 const trunkMat = new THREE.MeshLambertMaterial({ color: 0x8B4513, flatShading: true });
                 const leavesMat = new THREE.MeshLambertMaterial({ color: 0x006400, flatShading: true });
+                const treeX = (seededRandom() - 0.5) * 1800;
+                const treeZ = (seededRandom() - 0.5) * 1800;
                 
                 const trunkGeo = new THREE.CylinderGeometry(1, 1, 10, 6);
                 const trunk = new THREE.Mesh(trunkGeo, trunkMat);
-                trunk.position.y = 5 + GROUND_Y;
-                tree.add(trunk);
+                trunk.position.set(treeX, GROUND_Y + 5, treeZ);
+                scene.add(trunk);
+                collidableObjects.push(new THREE.Box3().setFromObject(trunk));
 
                 const leavesGeo = new THREE.ConeGeometry(5, 15, 8);
                 const leaves = new THREE.Mesh(leavesGeo, leavesMat);
-                leaves.position.y = 15 + GROUND_Y;
-                tree.add(leaves);
-                
-                const box = new THREE.Box3().setFromObject(tree);
-                collidableObjects.push(box);
-                return tree;
+                leaves.position.set(treeX, GROUND_Y + 15, treeZ);
+                scene.add(leaves);
+                collidableObjects.push(new THREE.Box3().setFromObject(leaves));
             }
-
-            const createLake = () => {
+            // Generate lakes
+            for (let i = 0; i < 15; i++) {
                 const lakeGeo = new THREE.CylinderGeometry(seededRandom() * 40 + 30, seededRandom() * 40 + 30, 0.5, 32);
                 const lakeMat = new THREE.MeshBasicMaterial({ color: 0x4682B4 });
                 const lake = new THREE.Mesh(lakeGeo, lakeMat);
-                lake.position.y = GROUND_Y + 0.26;
-                return lake;
+                lake.position.set((seededRandom() - 0.5) * 1800, GROUND_Y + 0.26, (seededRandom() - 0.5) * 1800);
+                scene.add(lake);
             }
-
-            const createTank = () => {
+            // Generate tanks
+            for (let i = 0; i < 10; i++) {
                 const tank = new THREE.Group();
                 const mat = new THREE.MeshLambertMaterial({ color: 0x556B2F, flatShading: true });
 
@@ -218,30 +237,7 @@ export default function Game({ mode, playerName: playerNameProp }: GameProps) {
                 barrel.rotation.x = Math.PI / 2;
                 tank.add(barrel);
                 
-                tank.position.y = 1.5 + GROUND_Y;
-                return tank;
-            }
-            
-            // Regenerate world with seed
-            seed = WORLD_SEED; 
-            for (let i = 0; i < 20; i++) {
-                const mountain = createMountain();
-                mountain.position.set((seededRandom() - 0.5) * 1800, 0, (seededRandom() - 0.5) * 1800);
-                scene.add(mountain);
-            }
-            for (let i = 0; i < 50; i++) {
-                const tree = createTree();
-                tree.position.set((seededRandom() - 0.5) * 1800, 0, (seededRandom() - 0.5) * 1800);
-                scene.add(tree);
-            }
-            for (let i = 0; i < 15; i++) {
-                const lake = createLake();
-                lake.position.set((seededRandom() - 0.5) * 1800, 0, (seededRandom() - 0.5) * 1800);
-                scene.add(lake);
-            }
-            for (let i = 0; i < 10; i++) {
-                const tank = createTank();
-                tank.position.set((seededRandom() - 0.5) * 1800, 0, (seededRandom() - 0.5) * 1800);
+                tank.position.set((seededRandom() - 0.5) * 1800, GROUND_Y + 1.5, (seededRandom() - 0.5) * 1800);
                 scene.add(tank);
             }
 
@@ -463,7 +459,7 @@ export default function Game({ mode, playerName: playerNameProp }: GameProps) {
                             }
                         }
 
-                        if (hasCrashed || myPlane.position.y < GROUND_Y || boundaryWarningTimerRef.current <= 0 || altitudeWarningTimerRef.current <= 0) {
+                        if (hasCrashed || boundaryWarningTimerRef.current <= 0 || altitudeWarningTimerRef.current <= 0) {
                             if (offlinePlayer.health > 0) {
                                 offlinePlayer.health = 0;
                                 setPlayerHealth(0);
@@ -575,21 +571,6 @@ export default function Game({ mode, playerName: playerNameProp }: GameProps) {
             scene.clear();
         };
     }, [mode, playerNameProp, router]);
-
-    const handlePlayAgain = useCallback(() => {
-        if (mode === 'online') {
-            const room = roomRef.current;
-            if (room) {
-                room.send("respawn");
-                setGameStatus('playing');
-                altitudeWarningTimerRef.current = 5;
-                boundaryWarningTimerRef.current = 7;
-            }
-        } else {
-            // This is a bit of a hack to force a re-render and re-init of the game
-            router.push('/play?t=' + new Date().getTime());
-        }
-    }, [mode, router]);
 
 
     return (

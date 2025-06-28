@@ -80,45 +80,50 @@ export class VoxelAcesRoom extends Room<VoxelAcesState> {
             return x - Math.floor(x);
         };
 
+        const groundBox = new THREE.Box3(
+            new THREE.Vector3(-1000, GROUND_Y - 1, -1000),
+            new THREE.Vector3(1000, GROUND_Y, 1000)
+        );
+        this.collidableObjects.push(groundBox);
+
         // Generate mountains
         for (let i = 0; i < 20; i++) {
-            const mountainGroupPos = new THREE.Vector3((seededRandom() - 0.5) * 1800, 0, (seededRandom() - 0.5) * 1800);
+            const mountainPosX = (seededRandom() - 0.5) * 1800;
+            const mountainPosZ = (seededRandom() - 0.5) * 1800;
             const layers = Math.floor(seededRandom() * 5) + 3;
             let baseRadius = seededRandom() * 50 + 40;
             let currentY = GROUND_Y;
-            
-            const mountainGroup = new THREE.Group();
-            mountainGroup.position.copy(mountainGroupPos);
 
             for (let j = 0; j < layers; j++) {
                 const height = seededRandom() * 30 + 20;
                 const radius = baseRadius * ((layers - j) / layers);
                 
-                const cylinder = new THREE.Mesh(new THREE.CylinderGeometry(radius * 0.7, radius, height, 8));
-                cylinder.position.y = currentY + height / 2;
-                mountainGroup.add(cylinder);
-
+                const geo = new THREE.CylinderGeometry(radius * 0.7, radius, height, 8);
+                const mesh = new THREE.Mesh(geo);
+                mesh.position.set(mountainPosX, currentY + height / 2, mountainPosZ);
+                mesh.updateMatrixWorld();
+                
+                this.collidableObjects.push(new THREE.Box3().setFromObject(mesh));
                 currentY += height * 0.8;
             }
-            // Add a single bounding box for the entire mountain group
-            this.collidableObjects.push(new THREE.Box3().setFromObject(mountainGroup));
         }
 
         // Generate trees
         for (let i = 0; i < 50; i++) {
-            const treePos = new THREE.Vector3((seededRandom() - 0.5) * 1800, 0, (seededRandom() - 0.5) * 1800);
-            const treeGroup = new THREE.Group();
-            treeGroup.position.copy(treePos);
+            const treeX = (seededRandom() - 0.5) * 1800;
+            const treeZ = (seededRandom() - 0.5) * 1800;
 
-            const trunk = new THREE.Mesh(new THREE.CylinderGeometry(1, 1, 10, 6));
-            trunk.position.y = 5 + GROUND_Y;
-            treeGroup.add(trunk);
+            const trunkGeo = new THREE.CylinderGeometry(1, 1, 10, 6);
+            const trunkMesh = new THREE.Mesh(trunkGeo);
+            trunkMesh.position.set(treeX, GROUND_Y + 5, treeZ);
+            trunkMesh.updateMatrixWorld();
+            this.collidableObjects.push(new THREE.Box3().setFromObject(trunkMesh));
 
-            const leaves = new THREE.Mesh(new THREE.ConeGeometry(5, 15, 8));
-            leaves.position.y = 15 + GROUND_Y;
-            treeGroup.add(leaves);
-            
-            this.collidableObjects.push(new THREE.Box3().setFromObject(treeGroup));
+            const leavesGeo = new THREE.ConeGeometry(5, 15, 8);
+            const leavesMesh = new THREE.Mesh(leavesGeo);
+            leavesMesh.position.set(treeX, GROUND_Y + 15, treeZ);
+            leavesMesh.updateMatrixWorld();
+            this.collidableObjects.push(new THREE.Box3().setFromObject(leavesMesh));
         }
     }
 
@@ -239,7 +244,7 @@ export class VoxelAcesRoom extends Room<VoxelAcesState> {
                 }
             }
             
-            if (hasCrashed || player.y < GROUND_Y || serverPlayer.boundaryTimer <= 0 || serverPlayer.altitudeTimer <= 0) {
+            if (hasCrashed || serverPlayer.boundaryTimer <= 0 || serverPlayer.altitudeTimer <= 0) {
                 if (player.health > 0) player.health = 0;
             }
         });
