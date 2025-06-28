@@ -22,7 +22,7 @@ const PITCH_SPEED = 1.2;
 const ROLL_SPEED = 1.5;
 const BULLET_SPEED = 200;
 const BULLET_LIFESPAN_MS = 5000;
-const INTERPOLATION_FACTOR = 0.2;
+const INTERPOLATION_FACTOR = 0.15;
 
 const createVoxelPlane = (color: THREE.ColorRepresentation) => {
     const plane = new THREE.Group();
@@ -103,7 +103,6 @@ export default function Game({ mode, playerName: playerNameProp }: GameProps) {
                 boundaryWarningTimerRef.current = 7;
             }
         } else {
-            // This is a bit of a hack to force a re-render and re-init of the game
             router.push('/play?t=' + new Date().getTime());
         }
     }, [mode, router]);
@@ -127,7 +126,7 @@ export default function Game({ mode, playerName: playerNameProp }: GameProps) {
 
         // Offline state
         const offlinePlayer = {
-            position: new THREE.Vector3(200, 50, 200), // Safer spawn point
+            position: new THREE.Vector3(200, 50, 200),
             quaternion: new THREE.Quaternion(),
             gunCooldown: 0,
             gunOverheat: 0,
@@ -183,7 +182,7 @@ export default function Game({ mode, playerName: playerNameProp }: GameProps) {
                     const height = seededRandom() * 30 + 20;
                     const radius = baseRadius * ((layers - j) / layers);
                     const isTopLayer = j === layers - 1;
-                    const matColor = isTopLayer ? 0x228B22 : 0x6A6A6A; // Green top
+                    const matColor = isTopLayer ? 0x228B22 : 0x6A6A6A;
                     const geo = new THREE.CylinderGeometry(radius * 0.7, radius, height, 8);
                     const mat = new THREE.MeshLambertMaterial({ color: matColor, flatShading: true });
                     const mesh = new THREE.Mesh(geo, mat);
@@ -570,7 +569,7 @@ export default function Game({ mode, playerName: playerNameProp }: GameProps) {
             renderer.dispose();
             scene.clear();
         };
-    }, [mode, playerNameProp, router]);
+    }, [mode, playerNameProp, router, handlePlayAgain]);
 
 
     return (
@@ -635,7 +634,7 @@ export default function Game({ mode, playerName: playerNameProp }: GameProps) {
             )}
             
             {_gameStatus === 'playing' ? (
-                 <HUD score={score} wave={wave} health={playerHealth} overheat={gunOverheat} altitude={altitude} mode={mode} />
+                 <HUD score={score} wave={wave} health={playerHealth} overheat={gunOverheat} altitude={altitude} mode={mode} players={roomRef.current?.state.players} />
             ) : null}
 
             {_gameStatus === 'gameover' && (

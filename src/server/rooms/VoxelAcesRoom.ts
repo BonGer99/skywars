@@ -36,6 +36,9 @@ export class VoxelAcesRoom extends Room<VoxelAcesState> {
     onCreate(options: any) {
         this.setState(new VoxelAcesState());
 
+        // Increase patch rate for smoother sync
+        this.setPatchRate(1000 / 30); // ~33ms, 30fps
+
         // Setup world generation
         this.generateWorld();
 
@@ -61,7 +64,7 @@ export class VoxelAcesRoom extends Room<VoxelAcesState> {
                 playerState.qy = 0;
                 playerState.qz = 0;
                 playerState.qw = 1;
-                playerState.kills = playerState.kills; // Keep score on respawn
+                // Keep score on respawn
 
                 serverPlayer.position.set(playerState.x, playerState.y, playerState.z);
                 serverPlayer.quaternion.set(0, 0, 0, 1);
