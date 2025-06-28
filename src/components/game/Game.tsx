@@ -20,13 +20,13 @@ const MAX_ALTITUDE = 220;
 const GROUND_Y = -50;
 const BASE_SPEED = 60;
 const BOOST_MULTIPLIER = 2.0;
-const PITCH_SPEED = 1.5;
-const ROLL_SPEED = 1.5;
+const PITCH_SPEED = 1.0;
+const ROLL_SPEED = 1.0;
 const YAW_SPEED_MOBILE = 2.0;
 const VERTICAL_SPEED_MOBILE = 30;
 const BULLET_SPEED = 200;
 const BULLET_LIFESPAN_MS = 5000;
-const INTERPOLATION_FACTOR = 0.075;
+const INTERPOLATION_FACTOR = 0.05;
 const TERRAIN_COLLISION_GEOMETRY = new THREE.BoxGeometry(1.5, 1.2, 4);
 const BULLET_COLLISION_GEOMETRY = new THREE.BoxGeometry(8, 2, 4);
 const OFFLINE_SPAWN_POS = new THREE.Vector3(200, 50, 200);
@@ -424,7 +424,7 @@ export default function Game({ mode, playerName: playerNameProp }: GameProps) {
                 isConnectingRef.current = true;
                 try {
                     const protocol = window.location.protocol === "https:" ? "wss" : "ws";
-                    const endpoint = `${protocol}://${window.location.host}`;
+                    const endpoint = `${protocol}://${window.location.host}/colyseus`;
                     client = new Colyseus.Client(endpoint);
                     const room = await client.joinOrCreate<VoxelAcesState>("voxel_aces_room", { playerName: playerNameProp, controlStyle });
                     roomRef.current = room;
@@ -507,7 +507,7 @@ export default function Game({ mode, playerName: playerNameProp }: GameProps) {
                         const yawAngle = -YAW_SPEED_MOBILE * joystick.x * delta;
                         playerState.quaternion.multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), yawAngle));
 
-                        const pitchAngle = PITCH_SPEED * joystick.y * delta;
+                        const pitchAngle = PITCH_SPEED * -joystick.y * delta;
                         playerState.quaternion.multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), pitchAngle));
                          
                         const targetRoll = -ROLL_SPEED * joystick.x * 0.5;
@@ -541,7 +541,7 @@ export default function Game({ mode, playerName: playerNameProp }: GameProps) {
                         let bulletQuaternion = playerState.quaternion;
                         if (myControlStyle === 'arcade' && visualGroup) {
                             const worldQuaternion = new THREE.Quaternion();
-                            visualGroup.getWorldQuaternion(worldQuaternion);
+                            myPlane.getWorldQuaternion(worldQuaternion); // Use the main plane's world quaternion
                             bulletQuaternion = worldQuaternion;
                         }
                         const bulletVelocity = new THREE.Vector3(0, 0, -BULLET_SPEED).applyQuaternion(bulletQuaternion);
@@ -733,5 +733,3 @@ export default function Game({ mode, playerName: playerNameProp }: GameProps) {
         </div>
     );
 }
-
-    

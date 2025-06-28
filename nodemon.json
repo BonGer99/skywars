@@ -1,8 +1,0 @@
-
-{
-  "watch": ["src/server"],
-  "ext": "ts",
-  "execMap": {
-    "ts": "tsx"
-  }
-}
