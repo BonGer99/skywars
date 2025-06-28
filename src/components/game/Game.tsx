@@ -302,9 +302,9 @@ export default function Game({ mode, serverId: serverIdProp, playerName: playerN
             playerIdRef.current = playerId;
             
             if (playerRef.current) {
-              const pos = initialPlayerState.position;
-              playerRef.current.position.set(pos.x, pos.y, pos.z);
-              playerRef.current.quaternion.set(0,0,0,1);
+              // initialPlayerState comes from a server action and has serialized THREE.js objects
+              playerRef.current.position.fromArray(initialPlayerState.position);
+              playerRef.current.quaternion.fromArray(initialPlayerState.quaternion);
             }
             
             setGameState('playing');

@@ -6,7 +6,21 @@ import type { PlayerInput } from '@/lib/game-state';
 
 export async function joinServer(serverId: string, playerName: string) {
   const { player, playerId } = gameState.addPlayer(serverId, playerName);
-  return { player, playerId };
+  
+  // The full player object contains THREE.js Vector3 and Quaternion objects.
+  // These are not "plain objects" and cannot be passed from Server Actions
+  // to Client Components. We need to serialize them into a plain object.
+  const serializablePlayer = {
+    id: player.id,
+    name: player.name,
+    health: player.health,
+    kills: player.kills,
+    position: player.position.toArray(),
+    quaternion: player.quaternion.toArray(),
+    isAI: player.isAI,
+  };
+
+  return { player: serializablePlayer, playerId };
 }
 
 export async function leaveServer(serverId: string, playerId: string) {
