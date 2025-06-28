@@ -24,6 +24,9 @@ const BASE_SPEED = 60;
 const BOOST_MULTIPLIER = 2.0;
 const PITCH_SPEED = 2.5;
 const ROLL_SPEED = 2.5;
+const BULLET_SPEED = 200;
+const BULLET_LIFESPAN_MS = 5000;
+
 
 const createVoxelPlane = (color: THREE.ColorRepresentation) => {
     const plane = new THREE.Group();
@@ -70,6 +73,12 @@ export default function Game({ mode, playerName: playerNameProp }: GameProps) {
     
     const playerPlaneRef = useRef<THREE.Group | null>(null);
 
+    // Offline mode state
+    const localBullets = useRef<any[]>([]).current;
+    const localBulletMeshes = useRef<Record<string, THREE.Mesh>>({}).current;
+    const offlinePlayerState = useRef({ gunCooldown: 0, gunOverheat: 0 }).current;
+
+
     const [score, setScore] = useState(0);
     const [wave, setWave] = useState(1);
     const [playerHealth, setPlayerHealth] = useState(100);
@@ -105,7 +114,7 @@ export default function Game({ mode, playerName: playerNameProp }: GameProps) {
         let joinRequest: Promise<Colyseus.Room<VoxelAcesState>>;
 
         const localPlanes: Record<string, THREE.Group> = {};
-        const localBullets: Record<string, THREE.Mesh> = {};
+        const localBulletsOnline: Record<string, THREE.Mesh> = {};
 
         // Offline player physics state
         const offlinePlayer = {
@@ -233,7 +242,7 @@ export default function Game({ mode, playerName: playerNameProp }: GameProps) {
                 
                 const input = {
                     w: !!keysPressed['w'], s: !!keysPressed['s'], a: !!keysPressed['a'], d: !!keysPressed['d'],
-                    shift: !!keysPressed['shift'],
+                    shift: !!keysPressed['shift'], space: !!keysPressed[' '], mouse0: !!keysPressed['mouse0'],
                 };
 
                 if (input.w) offlinePlayer.quaternion.multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), -PITCH_SPEED * delta));
@@ -247,8 +256,51 @@ export default function Game({ mode, playerName: playerNameProp }: GameProps) {
 
                 myPlane.position.copy(offlinePlayer.position);
                 myPlane.quaternion.copy(offlinePlayer.quaternion);
+                
+                // Offline shooting
+                offlinePlayerState.gunCooldown = Math.max(0, offlinePlayerState.gunCooldown - delta);
+                if ((input.space || input.mouse0) && offlinePlayerState.gunCooldown <= 0) {
+                    offlinePlayerState.gunCooldown = 0.1;
+
+                    const bulletId = Math.random().toString(36).substring(2, 15);
+                    const bulletVelocity = new THREE.Vector3(0, 0, -BULLET_SPEED).applyQuaternion(offlinePlayer.quaternion);
+                    
+                    const bullet = {
+                        id: bulletId,
+                        position: myPlane.position.clone(),
+                        velocity: bulletVelocity,
+                        spawnTime: time
+                    };
+                    localBullets.push(bullet);
+            
+                    const bulletGeo = new THREE.BoxGeometry(0.2, 0.2, 1);
+                    const bulletMat = new THREE.MeshBasicMaterial({ color: 0xffff00 });
+                    const bulletMesh = new THREE.Mesh(bulletGeo, bulletMat);
+                    bulletMesh.position.copy(bullet.position);
+                    localBulletMeshes[bulletId] = bulletMesh;
+                    scene.add(bulletMesh);
+                }
             }
-            // --- END OFFLINE MODE LOGIC ---
+             // --- Update local bullets (OFFLINE ONLY) ---
+            const now = time;
+            for (let i = localBullets.length - 1; i >= 0; i--) {
+                const bullet = localBullets[i];
+                bullet.position.add(bullet.velocity.clone().multiplyScalar(delta));
+                
+                const bulletMesh = localBulletMeshes[bullet.id];
+                if (bulletMesh) {
+                    bulletMesh.position.copy(bullet.position);
+                }
+
+                if (now - bullet.spawnTime > BULLET_LIFESPAN_MS) {
+                    if (bulletMesh) {
+                        scene.remove(bulletMesh);
+                        delete localBulletMeshes[bullet.id];
+                    }
+                    localBullets.splice(i, 1);
+                }
+            }
+
 
             if (gameStatusRef.current === 'playing' && myPlane) {
                 const currentAltitude = myPlane.position.y - ground.position.y;
@@ -323,8 +375,9 @@ export default function Game({ mode, playerName: playerNameProp }: GameProps) {
                     scene.add(planeMesh);
 
                     player.onChange = () => {
-                        planeMesh.position.lerp(new THREE.Vector3(player.x, player.y, player.z), 0.3);
-                        planeMesh.quaternion.slerp(new THREE.Quaternion(player.qx, player.qy, player.qz, player.qw), 0.3);
+                        // Snap to server position to ensure movement is always responsive
+                        planeMesh.position.set(player.x, player.y, player.z);
+                        planeMesh.quaternion.set(player.qx, player.qy, player.qz, player.qw);
                         
                         if(isMe) {
                             const currentHealth = player.health;
@@ -354,7 +407,7 @@ export default function Game({ mode, playerName: playerNameProp }: GameProps) {
                     const bulletMat = new THREE.MeshBasicMaterial({ color: 0xffff00 });
                     const bulletMesh = new THREE.Mesh(bulletGeo, bulletMat);
                     bulletMesh.position.set(bullet.x, bullet.y, bullet.z);
-                    localBullets[bulletId] = bulletMesh;
+                    localBulletsOnline[bulletId] = bulletMesh;
                     scene.add(bulletMesh);
 
                     bullet.onChange = () => {
@@ -363,9 +416,9 @@ export default function Game({ mode, playerName: playerNameProp }: GameProps) {
                 });
                 
                 room.state.bullets.onRemove((bullet, bulletId) => {
-                    if(localBullets[bulletId]) {
-                        scene.remove(localBullets[bulletId]);
-                        delete localBullets[bulletId];
+                    if(localBulletsOnline[bulletId]) {
+                        scene.remove(localBulletsOnline[bulletId]);
+                        delete localBulletsOnline[bulletId];
                     }
 });
 
@@ -410,8 +463,10 @@ export default function Game({ mode, playerName: playerNameProp }: GameProps) {
             window.removeEventListener('resize', handleResize);
             
             Object.values(localPlanes).forEach(plane => scene.remove(plane));
-            Object.values(localBullets).forEach(bullet => scene.remove(bullet));
+            Object.values(localBulletsOnline).forEach(bullet => scene.remove(bullet));
             if(playerPlaneRef.current) scene.remove(playerPlaneRef.current);
+            Object.values(localBulletMeshes).forEach(bullet => scene.remove(bullet));
+
 
             if(mountRef.current && renderer.domElement && mountRef.current.contains(renderer.domElement)) {
                 mountRef.current.removeChild(renderer.domElement);
