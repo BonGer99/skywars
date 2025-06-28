@@ -22,8 +22,8 @@ const GROUND_Y = -50;
 // Shared physics constants (from server)
 const BASE_SPEED = 60;
 const BOOST_MULTIPLIER = 2.0;
-const PITCH_SPEED = 7.0;
-const ROLL_SPEED = 7.0;
+const PITCH_SPEED = 2.5;
+const ROLL_SPEED = 2.5;
 
 const createVoxelPlane = (color: THREE.ColorRepresentation) => {
     const plane = new THREE.Group();
@@ -323,8 +323,8 @@ export default function Game({ mode, playerName: playerNameProp }: GameProps) {
                     scene.add(planeMesh);
 
                     player.onChange = () => {
-                        planeMesh.position.lerp(new THREE.Vector3(player.x, player.y, player.z), 0.2);
-                        planeMesh.quaternion.slerp(new THREE.Quaternion(player.qx, player.qy, player.qz, player.qw), 0.2);
+                        planeMesh.position.lerp(new THREE.Vector3(player.x, player.y, player.z), 0.3);
+                        planeMesh.quaternion.slerp(new THREE.Quaternion(player.qx, player.qy, player.qz, player.qw), 0.3);
                         
                         if(isMe) {
                             const currentHealth = player.health;
@@ -370,7 +370,7 @@ export default function Game({ mode, playerName: playerNameProp }: GameProps) {
 });
 
                 inputInterval = setInterval(() => {
-                    if (roomRef.current) {
+                    if (roomRef.current && gameStatusRef.current === 'playing') {
                         const playerInput = {
                             w: !!keysPressed['w'], s: !!keysPressed['s'], a: !!keysPressed['a'], d: !!keysPressed['d'],
                             shift: !!keysPressed['shift'], space: !!keysPressed[' '], mouse0: !!keysPressed['mouse0'],
