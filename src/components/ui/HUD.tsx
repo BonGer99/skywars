@@ -2,6 +2,8 @@
 import { Card, CardContent } from '@/components/ui/card';
 import { Progress } from '@/components/ui/progress';
 import ServerLeaderboard from './ServerLeaderboard';
+import type { MapSchema } from '@colyseus/schema';
+import type { Player } from '@/server/rooms/state/VoxelAcesState';
 
 interface HUDProps {
   score: number;
@@ -11,9 +13,10 @@ interface HUDProps {
   altitude: number;
   mode: 'offline' | 'online';
   serverId?: string;
+  players?: MapSchema<Player>;
 }
 
-export default function HUD({ score, wave, health, overheat, altitude, mode, serverId }: HUDProps) {
+export default function HUD({ score, wave, health, overheat, altitude, mode, serverId, players }: HUDProps) {
   return (
     <div className="absolute top-4 left-4 right-4 text-white font-headline pointer-events-none select-none">
       <div className="flex justify-between items-start">
@@ -34,8 +37,8 @@ export default function HUD({ score, wave, health, overheat, altitude, mode, ser
           </CardContent>
         </Card>
 
-        {mode === 'online' && serverId ? (
-          <ServerLeaderboard serverId={serverId} />
+        {mode === 'online' && serverId && players ? (
+          <ServerLeaderboard players={players} />
         ) : (
           <Card className="text-right bg-black/30 backdrop-blur-sm border-primary/50 text-primary-foreground p-2">
             <CardContent className="p-2 min-w-[140px] sm:min-w-[160px]">

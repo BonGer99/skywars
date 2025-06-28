@@ -5,11 +5,11 @@ import { useState, useEffect } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Crown } from 'lucide-react';
-import { getFullState } from '@/app/game-actions';
-
+import type { MapSchema } from '@colyseus/schema';
+import type { Player as PlayerState } from '@/server/rooms/state/VoxelAcesState';
 
 interface ServerLeaderboardProps {
-  serverId: string;
+  players: MapSchema<PlayerState>;
 }
 
 type Player = {
@@ -18,33 +18,39 @@ type Player = {
   kills: number;
 };
 
-export default function ServerLeaderboard({ serverId }: ServerLeaderboardProps) {
-  const [players, setPlayers] = useState<Player[]>([]);
+export default function ServerLeaderboard({ players: playersMap }: ServerLeaderboardProps) {
+  const [leaderboard, setLeaderboard] = useState<Player[]>([]);
 
   useEffect(() => {
-    if (!serverId) return;
-
-    const fetchLeaderboard = async () => {
-        try {
-            const state = await getFullState(serverId);
-            if (state && state.players) {
-                const playersData: Player[] = Object.values(state.players)
-                    .map((p: any) => ({ id: p.id, name: p.name, kills: p.kills, isAI: p.isAI }))
-                    .filter(p => !p.isAI) // Don't show AI on leaderboard
-                    .sort((a, b) => b.kills - a.kills)
-                    .slice(0, 5);
-                setPlayers(playersData);
-            }
-        } catch (e) {
-            console.error("Failed to fetch leaderboard", e);
-        }
+    // This function will be triggered by Colyseus on any change
+    const updateLeaderboard = () => {
+      const playersData: Player[] = [];
+      playersMap.forEach((player, id) => {
+        playersData.push({ id, name: player.name, kills: player.kills });
+      });
+      
+      const sortedPlayers = playersData
+        .sort((a, b) => b.kills - a.kills)
+        .slice(0, 5);
+        
+      setLeaderboard(sortedPlayers);
     };
-    
-    fetchLeaderboard();
-    const interval = setInterval(fetchLeaderboard, 2000); // update leaderboard every 2 seconds
 
-    return () => clearInterval(interval);
-  }, [serverId]);
+    // Initial update
+    updateLeaderboard();
+
+    // Listen for changes
+    playersMap.onAdd = updateLeaderboard;
+    playersMap.onRemove = updateLeaderboard;
+    playersMap.onChange = updateLeaderboard;
+
+    return () => {
+        playersMap.onAdd = () => {};
+        playersMap.onRemove = () => {};
+        playersMap.onChange = () => {};
+    }
+
+  }, [playersMap]);
 
   return (
     <Card className="w-52 sm:w-64 bg-black/30 backdrop-blur-sm border-primary/50 text-primary-foreground p-2">
@@ -63,13 +69,13 @@ export default function ServerLeaderboard({ serverId }: ServerLeaderboardProps) 
             </TableRow>
           </TableHeader>
           <TableBody>
-            {players.map((player) => (
+            {leaderboard.map((player) => (
               <TableRow key={player.id} className="border-b-0">
                 <TableCell className="p-1 font-medium truncate">{player.name}</TableCell>
                 <TableCell className="p-1 text-right">{player.kills}</TableCell>
               </TableRow>
             ))}
-            {players.length === 0 && (
+            {leaderboard.length === 0 && (
                 <TableRow className="border-b-0">
                     <TableCell colSpan={2} className="p-1 text-center text-xs text-muted-foreground">No players yet.</TableCell>
                 </TableRow>
