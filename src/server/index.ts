@@ -7,7 +7,9 @@ import { Server } from 'colyseus';
 import { WebSocketTransport } from '@colyseus/ws-transport';
 import { VoxelAcesRoom } from './rooms/VoxelAcesRoom';
 
-const port = Number(process.env.PORT || 3000);
+const portIndex = process.argv.indexOf('--port');
+const port = portIndex > -1 ? parseInt(process.argv[portIndex + 1], 10) : Number(process.env.PORT || 3000);
+
 const dev = process.env.NODE_ENV !== 'production';
 const nextApp = next({ dev });
 const handle = nextApp.getRequestHandler();
