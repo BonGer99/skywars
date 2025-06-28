@@ -295,7 +295,11 @@ export default function Game({ mode, playerName: playerNameProp }: GameProps) {
             if (inputInterval) clearInterval(inputInterval);
             
             roomRef.current?.leave();
-            hasActiveJoinRequest = false; // Reset on unmount
+            //
+            // FIX: Do not reset `hasActiveJoinRequest` here.
+            // It is reset in the .finally() block of the promise, which is sufficient.
+            // Resetting it here causes a race condition in React.StrictMode.
+            //
             
             window.removeEventListener('keydown', handleKeyDown);
             window.removeEventListener('keyup', handleKeyUp);
@@ -311,7 +315,7 @@ export default function Game({ mode, playerName: playerNameProp }: GameProps) {
             }
             renderer.dispose();
         };
-    }, [mode, playerNameProp, router]); // Re-run effect only when mode or player name changes
+    }, [mode, playerNameProp, router, handlePlayAgain]); // Re-run effect only when mode or player name changes
 
     return (
         <div className="relative w-screen h-screen bg-background overflow-hidden" onContextMenu={(e) => e.preventDefault()}>
