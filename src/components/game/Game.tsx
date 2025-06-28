@@ -57,6 +57,7 @@ interface GameProps {
 export default function Game({ mode, playerName: playerNameProp }: GameProps) {
     const mountRef = useRef<HTMLDivElement>(null);
     const router = useRouter();
+    const roomRef = useRef<Colyseus.Room<VoxelAcesState> | null>(null);
 
     const gameStatusRef = useRef<GameStatus>(mode === 'offline' ? 'menu' : 'loading');
     const [_gameStatus, _setGameStatus] = useState<GameStatus>(gameStatusRef.current);
@@ -90,7 +91,6 @@ export default function Game({ mode, playerName: playerNameProp }: GameProps) {
         let isMounted = true;
         let animationFrameId: number;
         let client: Colyseus.Client;
-        let room: Colyseus.Room<VoxelAcesState> | null = null;
         let inputInterval: NodeJS.Timeout;
 
         const scene = new THREE.Scene();
@@ -193,7 +193,8 @@ export default function Game({ mode, playerName: playerNameProp }: GameProps) {
                     const endpoint = `${protocol}://${window.location.host}`;
                     client = new Colyseus.Client(endpoint);
                     
-                    room = await client.joinOrCreate<VoxelAcesState>("voxel_aces_room", { playerName: playerNameProp });
+                    const room = await client.joinOrCreate<VoxelAcesState>("voxel_aces_room", { playerName: playerNameProp });
+                    roomRef.current = room;
 
                     setGameStatus('playing');
 
@@ -309,7 +310,7 @@ export default function Game({ mode, playerName: playerNameProp }: GameProps) {
                 }
                 
                 let myPlane: THREE.Group | null = null;
-                const myId = room?.sessionId;
+                const myId = roomRef.current?.sessionId;
                 if (mode === 'online') {
                     myPlane = myId ? localPlanes[myId] : null;
                 } else {
@@ -376,7 +377,7 @@ export default function Game({ mode, playerName: playerNameProp }: GameProps) {
                     
                     // Offline death check
                     setPlayerHealth(offlinePlayer.health);
-                    if ( myPlane.position.y < GROUND_Y || altitudeWarningTimer <= 0 || boundaryWarningTimer <= 0 ) {
+                    if ( myPlane && (myPlane.position.y < GROUND_Y || altitudeWarningTimer <= 0 || boundaryWarningTimer <= 0) ) {
                         offlinePlayer.health = 0;
                         setPlayerHealth(0);
                         setGameStatus('gameover');
@@ -429,8 +430,7 @@ export default function Game({ mode, playerName: playerNameProp }: GameProps) {
             cancelAnimationFrame(animationFrameId);
             if (inputInterval) clearInterval(inputInterval);
             
-            room?.leave();
-            room = null;
+            roomRef.current?.leave();
             
             // Remove event listeners
             window.removeEventListener('keydown', (e) => keysPressed[e.key.toLowerCase()] = true);
@@ -454,14 +454,17 @@ export default function Game({ mode, playerName: playerNameProp }: GameProps) {
     }, [mode, playerNameProp, router]);
 
     const handlePlayAgain = useCallback(() => {
-        if (mode === 'online' && room) {
-            room.send("respawn");
-            setGameStatus('playing');
+        if (mode === 'online') {
+            const room = roomRef.current;
+            if (room) {
+                room.send("respawn");
+                setGameStatus('playing');
+            }
         } else {
             // For offline, we just reset the router to re-trigger the component
              router.replace('/play');
         }
-    }, [mode, router, room]);
+    }, [mode, router]);
 
 
     return (
