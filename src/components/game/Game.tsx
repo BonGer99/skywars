@@ -294,7 +294,7 @@ export default function Game({ mode, playerName: playerNameProp }: GameProps) {
             cancelAnimationFrame(animationFrameId);
             if (inputInterval) clearInterval(inputInterval);
             
-            joinRequest?.then(room => room?.leave());
+            roomRef.current?.leave();
             hasActiveJoinRequest = false; // Reset on unmount
             
             window.removeEventListener('keydown', handleKeyDown);
