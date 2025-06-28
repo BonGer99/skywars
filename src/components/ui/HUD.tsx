@@ -12,11 +12,10 @@ interface HUDProps {
   overheat: number;
   altitude: number;
   mode: 'offline' | 'online';
-  serverId?: string;
   players?: MapSchema<Player>;
 }
 
-export default function HUD({ score, wave, health, overheat, altitude, mode, serverId, players }: HUDProps) {
+export default function HUD({ score, wave, health, overheat, altitude, mode, players }: HUDProps) {
   return (
     <div className="absolute top-4 left-4 right-4 text-white font-headline pointer-events-none select-none">
       <div className="flex justify-between items-start">
@@ -37,7 +36,7 @@ export default function HUD({ score, wave, health, overheat, altitude, mode, ser
           </CardContent>
         </Card>
 
-        {mode === 'online' && serverId && players ? (
+        {mode === 'online' && players ? (
           <ServerLeaderboard players={players} />
         ) : (
           <Card className="text-right bg-black/30 backdrop-blur-sm border-primary/50 text-primary-foreground p-2">

@@ -9,24 +9,18 @@ import HUD from '@/components/ui/HUD';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Loader2, Home } from 'lucide-react';
-import type { VoxelAcesState } from '@/server/rooms/state/VoxelAcesState';
-
-// Workaround for React.StrictMode, to avoid multiple join requests
-let hasActiveJoinRequest = false;
+import type { VoxelAcesState, Player } from '@/server/rooms/state/VoxelAcesState';
 
 // Constants
 const BOUNDARY = 950;
 const MAX_ALTITUDE = 220;
 const GROUND_Y = -50;
-
-// Shared physics constants (from server)
 const BASE_SPEED = 60;
 const BOOST_MULTIPLIER = 2.0;
 const PITCH_SPEED = 2.5;
 const ROLL_SPEED = 2.5;
 const BULLET_SPEED = 200;
 const BULLET_LIFESPAN_MS = 5000;
-
 
 const createVoxelPlane = (color: THREE.ColorRepresentation) => {
     const plane = new THREE.Group();
@@ -64,416 +58,411 @@ export default function Game({ mode, playerName: playerNameProp }: GameProps) {
     const mountRef = useRef<HTMLDivElement>(null);
     const router = useRouter();
 
-    const gameStatusRef = useRef<GameStatus>('loading');
+    const gameStatusRef = useRef<GameStatus>(mode === 'offline' ? 'menu' : 'loading');
+    const [_gameStatus, _setGameStatus] = useState<GameStatus>(gameStatusRef.current);
     const setGameStatus = (status: GameStatus) => {
         gameStatusRef.current = status;
         _setGameStatus(status);
     }
-    const [_gameStatus, _setGameStatus] = useState<GameStatus>('loading');
     
-    const playerPlaneRef = useRef<THREE.Group | null>(null);
-
-    // Offline mode state
-    const localBullets = useRef<any[]>([]).current;
-    const localBulletMeshes = useRef<Record<string, THREE.Mesh>>({}).current;
-    const offlinePlayerState = useRef({ gunCooldown: 0, gunOverheat: 0 }).current;
-
-
+    const keysPressed = useRef<Record<string, boolean>>({}).current;
+    
+    // UI State
     const [score, setScore] = useState(0);
     const [wave, setWave] = useState(1);
     const [playerHealth, setPlayerHealth] = useState(100);
     const [altitude, setAltitude] = useState(0);
-    
+    const [gunOverheat, setGunOverheat] = useState(0);
     const [showAltitudeWarning, setShowAltitudeWarning] = useState(false);
     const [altitudeWarningTimer, setAltitudeWarningTimer] = useState(5);
     const [showBoundaryWarning, setShowBoundaryWarning] = useState(false);
     const [boundaryWarningTimer, setBoundaryWarningTimer] = useState(7);
     const [whiteoutOpacity, setWhiteoutOpacity] = useState(0);
-    
-    const roomRef = useRef<Colyseus.Room<VoxelAcesState> | null>(null);
-    const keysPressed = useRef<Record<string, boolean>>({}).current;
 
-    const handleLeaveGame = useCallback(() => { 
-      roomRef.current?.leave();
-      router.push('/'); 
+    const handleLeaveGame = useCallback(() => {
+      // The useEffect cleanup will handle room leaving
+      router.push('/');
     }, [router]);
-
-    const handlePlayAgain = useCallback(() => {
-        if (roomRef.current) {
-            roomRef.current.send("respawn");
-        }
-    }, []);
 
     useEffect(() => {
         if (typeof window === 'undefined' || !mountRef.current) return;
-        
-        const mount = mountRef.current;
+
+        let isMounted = true;
         let animationFrameId: number;
-        let inputInterval: NodeJS.Timeout;
         let client: Colyseus.Client;
-        let joinRequest: Promise<Colyseus.Room<VoxelAcesState>>;
+        let room: Colyseus.Room<VoxelAcesState> | null = null;
+        let inputInterval: NodeJS.Timeout;
+
+        const scene = new THREE.Scene();
+        const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 4000);
+        const renderer = new THREE.WebGLRenderer({ antialias: true });
 
         const localPlanes: Record<string, THREE.Group> = {};
-        const localBulletsOnline: Record<string, THREE.Mesh> = {};
+        const localBullets: Record<string, THREE.Mesh> = {};
 
-        // Offline player physics state
+        // Offline state
         const offlinePlayer = {
             position: new THREE.Vector3(0, 50, 0),
             quaternion: new THREE.Quaternion(),
+            gunCooldown: 0,
+            gunOverheat: 0,
+            health: 100
         };
+        const localOfflineBullets: any[] = [];
+        const localOfflineBulletMeshes: Record<string, THREE.Mesh> = {};
 
-        const scene = new THREE.Scene();
-        scene.background = new THREE.Color(0x87CEEB); 
-        scene.fog = new THREE.Fog(0x87CEEB, 1000, 2500);
-        const camera = new THREE.PerspectiveCamera(75, mount.clientWidth / mount.clientHeight, 0.1, 4000);
-        const renderer = new THREE.WebGLRenderer({ antialias: true });
-        renderer.setPixelRatio(window.devicePixelRatio);
-        mount.appendChild(renderer.domElement);
-        
-        const handleResize = () => {
-            if (!mountRef.current) return;
-            camera.aspect = mountRef.current.clientWidth / mountRef.current.clientHeight;
-            camera.updateProjectionMatrix();
+
+        const init = async () => {
+            if (!isMounted || !mountRef.current) return;
+
+            // ======== 3D SCENE SETUP ========
+            renderer.setPixelRatio(window.devicePixelRatio);
             renderer.setSize(mountRef.current.clientWidth, mountRef.current.clientHeight);
-        };
-        handleResize();
-        
-        const ambientLight = new THREE.AmbientLight(0xffffff, 0.7);
-        scene.add(ambientLight);
-        const directionalLight = new THREE.DirectionalLight(0xffffff, 0.8);
-        directionalLight.position.set(5, 10, 7.5);
-        scene.add(directionalLight);
-
-        const groundGeo = new THREE.PlaneGeometry(2000, 2000);
-        const groundMat = new THREE.MeshLambertMaterial({ color: 0x4A6B3A, flatShading: true });
-        const ground = new THREE.Mesh(groundGeo, groundMat);
-        ground.rotation.x = -Math.PI / 2;
-        ground.position.y = GROUND_Y;
-        scene.add(ground);
-        
-        const scenery = new THREE.Group();
-        scene.add(scenery);
-        const cloudLayer = new THREE.Group();
-        scene.add(cloudLayer);
-
-        const createMountain = () => {
-            const mountain = new THREE.Group();
-            const layers = Math.floor(Math.random() * 5) + 3;
-            let baseRadius = Math.random() * 50 + 40;
-            let currentY = GROUND_Y;
-
-            for (let i = 0; i < layers; i++) {
-                const height = Math.random() * 30 + 20;
-                const radius = baseRadius * ((layers - i) / layers);
-                const geo = new THREE.CylinderGeometry(radius * 0.7, radius, height, 8);
-                const mat = new THREE.MeshLambertMaterial({ color: 0x6A6A6A, flatShading: true });
-                const mesh = new THREE.Mesh(geo, mat);
-                mesh.position.y = currentY + height / 2;
-                mountain.add(mesh);
-                currentY += height * 0.8;
-            }
-            return mountain;
-        }
-
-        for (let i = 0; i < 20; i++) {
-            const mountain = createMountain();
-            mountain.position.set(
-                (Math.random() - 0.5) * 1800,
-                0,
-                (Math.random() - 0.5) * 1800
-            );
-            scenery.add(mountain);
-        }
-
-        const createCloud = () => {
-            const cloud = new THREE.Group();
-            const mat = new THREE.MeshBasicMaterial({ color: 0xffffff, opacity: 0.8, transparent: true });
-            const puffCount = Math.floor(Math.random() * 5) + 3;
-            for(let i = 0; i < puffCount; i++) {
-                const size = Math.random() * 40 + 20;
-                const puffGeo = new THREE.BoxGeometry(size, size, size);
-                const puff = new THREE.Mesh(puffGeo, mat);
-                puff.position.set(
-                    (Math.random() - 0.5) * 60,
-                    (Math.random() - 0.5) * 20,
-                    (Math.random() - 0.5) * 60
-                );
-                cloud.add(puff);
-            }
-            return cloud;
-        }
-
-        for (let i = 0; i < 50; i++) {
-            const cloud = createCloud();
-            cloud.position.set(
-                (Math.random() - 0.5) * 1800,
-                Math.random() * 100 + 80, // altitude
-                (Math.random() - 0.5) * 1800
-            );
-            cloudLayer.add(cloud);
-        }
-
-        let lastTime = 0;
-
-        const gameLoop = (time: number) => {
-            animationFrameId = requestAnimationFrame(gameLoop);
-            const delta = lastTime > 0 ? (time - lastTime) / 1000 : 1/60;
-            lastTime = time;
+            mountRef.current.appendChild(renderer.domElement);
             
-            const myId = roomRef.current?.sessionId;
-            let myPlane: THREE.Group | null = null;
+            scene.background = new THREE.Color(0x87CEEB);
+            scene.fog = new THREE.Fog(0x87CEEB, 1000, 2500);
 
+            const ambientLight = new THREE.AmbientLight(0xffffff, 0.7);
+            scene.add(ambientLight);
+            const directionalLight = new THREE.DirectionalLight(0xffffff, 0.8);
+            directionalLight.position.set(5, 10, 7.5);
+            scene.add(directionalLight);
+
+            const groundGeo = new THREE.PlaneGeometry(2000, 2000);
+            const groundMat = new THREE.MeshLambertMaterial({ color: 0x4A6B3A, flatShading: true });
+            const ground = new THREE.Mesh(groundGeo, groundMat);
+            ground.rotation.x = -Math.PI / 2;
+            ground.position.y = GROUND_Y;
+            scene.add(ground);
+
+            const createMountain = () => {
+                const mountain = new THREE.Group();
+                const layers = Math.floor(Math.random() * 5) + 3;
+                let baseRadius = Math.random() * 50 + 40;
+                let currentY = GROUND_Y;
+                for (let i = 0; i < layers; i++) {
+                    const height = Math.random() * 30 + 20;
+                    const radius = baseRadius * ((layers - i) / layers);
+                    const geo = new THREE.CylinderGeometry(radius * 0.7, radius, height, 8);
+                    const mat = new THREE.MeshLambertMaterial({ color: 0x6A6A6A, flatShading: true });
+                    const mesh = new THREE.Mesh(geo, mat);
+                    mesh.position.y = currentY + height / 2;
+                    mountain.add(mesh);
+                    currentY += height * 0.8;
+                }
+                return mountain;
+            }
+            for (let i = 0; i < 20; i++) {
+                const mountain = createMountain();
+                mountain.position.set((Math.random() - 0.5) * 1800, 0, (Math.random() - 0.5) * 1800);
+                scene.add(mountain);
+            }
+
+            const createCloud = () => {
+                const cloud = new THREE.Group();
+                const mat = new THREE.MeshBasicMaterial({ color: 0xffffff, opacity: 0.8, transparent: true });
+                const puffCount = Math.floor(Math.random() * 5) + 3;
+                for(let i = 0; i < puffCount; i++) {
+                    const size = Math.random() * 40 + 20;
+                    const puffGeo = new THREE.BoxGeometry(size, size, size);
+                    const puff = new THREE.Mesh(puffGeo, mat);
+                    puff.position.set((Math.random() - 0.5) * 60, (Math.random() - 0.5) * 20, (Math.random() - 0.5) * 60);
+                    cloud.add(puff);
+                }
+                return cloud;
+            }
+            for (let i = 0; i < 50; i++) {
+                const cloud = createCloud();
+                cloud.position.set((Math.random() - 0.5) * 1800, Math.random() * 100 + 80, (Math.random() - 0.5) * 1800);
+                scene.add(cloud);
+            }
+
+            // ======== OFFLINE SETUP ========
+            if (mode === 'offline') {
+                const planeMesh = createVoxelPlane(0x0077ff);
+                planeMesh.position.copy(offlinePlayer.position);
+                localPlanes['offline_player'] = planeMesh;
+                scene.add(planeMesh);
+            }
+
+            // ======== ONLINE SETUP ========
             if (mode === 'online') {
-                myPlane = myId ? localPlanes[myId] : null;
-            } else {
-                myPlane = playerPlaneRef.current;
-            }
-            
-            // --- OFFLINE MODE LOGIC ---
-            if (mode === 'offline' && gameStatusRef.current === 'playing') {
-                if (!myPlane) {
-                    // Initialize offline game
-                    const planeMesh = createVoxelPlane(0x0077ff);
-                    planeMesh.position.copy(offlinePlayer.position);
-                    scene.add(planeMesh);
-                    playerPlaneRef.current = planeMesh;
-                    myPlane = planeMesh;
-                }
-                
-                const input = {
-                    w: !!keysPressed['w'], s: !!keysPressed['s'], a: !!keysPressed['a'], d: !!keysPressed['d'],
-                    shift: !!keysPressed['shift'], space: !!keysPressed[' '], mouse0: !!keysPressed['mouse0'],
-                };
-
-                if (input.w) offlinePlayer.quaternion.multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), -PITCH_SPEED * delta));
-                if (input.s) offlinePlayer.quaternion.multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), PITCH_SPEED * delta));
-                if (input.a) offlinePlayer.quaternion.multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 0, 1), ROLL_SPEED * delta));
-                if (input.d) offlinePlayer.quaternion.multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 0, 1), -ROLL_SPEED * delta));
-
-                const speed = input.shift ? BASE_SPEED * BOOST_MULTIPLIER : BASE_SPEED;
-                const forward = new THREE.Vector3(0, 0, -1).applyQuaternion(offlinePlayer.quaternion);
-                offlinePlayer.position.add(forward.multiplyScalar(speed * delta));
-
-                myPlane.position.copy(offlinePlayer.position);
-                myPlane.quaternion.copy(offlinePlayer.quaternion);
-                
-                // Offline shooting
-                offlinePlayerState.gunCooldown = Math.max(0, offlinePlayerState.gunCooldown - delta);
-                if ((input.space || input.mouse0) && offlinePlayerState.gunCooldown <= 0) {
-                    offlinePlayerState.gunCooldown = 0.1;
-
-                    const bulletId = Math.random().toString(36).substring(2, 15);
-                    const bulletVelocity = new THREE.Vector3(0, 0, -BULLET_SPEED).applyQuaternion(offlinePlayer.quaternion);
+                try {
+                    const protocol = window.location.protocol === "https:" ? "wss" : "ws";
+                    const endpoint = `${protocol}://${window.location.host}`;
+                    client = new Colyseus.Client(endpoint);
                     
-                    const bullet = {
-                        id: bulletId,
-                        position: myPlane.position.clone(),
-                        velocity: bulletVelocity,
-                        spawnTime: time
-                    };
-                    localBullets.push(bullet);
-            
-                    const bulletGeo = new THREE.BoxGeometry(0.2, 0.2, 1);
-                    const bulletMat = new THREE.MeshBasicMaterial({ color: 0xffff00 });
-                    const bulletMesh = new THREE.Mesh(bulletGeo, bulletMat);
-                    bulletMesh.position.copy(bullet.position);
-                    localBulletMeshes[bulletId] = bulletMesh;
-                    scene.add(bulletMesh);
-                }
-            }
-             // --- Update local bullets (OFFLINE ONLY) ---
-            const now = time;
-            for (let i = localBullets.length - 1; i >= 0; i--) {
-                const bullet = localBullets[i];
-                bullet.position.add(bullet.velocity.clone().multiplyScalar(delta));
-                
-                const bulletMesh = localBulletMeshes[bullet.id];
-                if (bulletMesh) {
-                    bulletMesh.position.copy(bullet.position);
-                }
+                    room = await client.joinOrCreate<VoxelAcesState>("voxel_aces_room", { playerName: playerNameProp });
 
-                if (now - bullet.spawnTime > BULLET_LIFESPAN_MS) {
-                    if (bulletMesh) {
-                        scene.remove(bulletMesh);
-                        delete localBulletMeshes[bullet.id];
-                    }
-                    localBullets.splice(i, 1);
-                }
-            }
+                    setGameStatus('playing');
 
+                    room.onLeave(() => {
+                        if (isMounted) {
+                           console.log("Disconnected from room.");
+                           setGameStatus('gameover');
+                        }
+                    });
 
-            if (gameStatusRef.current === 'playing' && myPlane) {
-                const currentAltitude = myPlane.position.y - ground.position.y;
-                setAltitude(currentAltitude);
-                
-                let altWarn = false;
-                if (currentAltitude > MAX_ALTITUDE) {
-                    altWarn = true;
-                    setAltitudeWarningTimer(t => Math.max(0, t - delta));
-                    const opacity = Math.max(0, 1 - (altitudeWarningTimer / 5));
-                    setWhiteoutOpacity(opacity);
-                } else {
-                    setAltitudeWarningTimer(5);
-                    setWhiteoutOpacity(0);
-                }
-                setShowAltitudeWarning(altWarn && gameStatusRef.current === 'playing');
-
-                let boundaryWarn = false;
-                if (Math.abs(myPlane.position.x) > BOUNDARY || Math.abs(myPlane.position.z) > BOUNDARY) {
-                   boundaryWarn = true;
-                   setBoundaryWarningTimer(t => Math.max(0, t - delta));
-                } else {
-                   setBoundaryWarningTimer(7);
-                }
-                setShowBoundaryWarning(boundaryWarn && gameStatusRef.current === 'playing');
-
-                const cameraOffset = new THREE.Vector3(0, 8, 15);
-                const idealOffset = cameraOffset.clone().applyQuaternion(myPlane.quaternion);
-                const idealPosition = myPlane.position.clone().add(idealOffset);
-                camera.position.lerp(idealPosition, 0.1);
-                camera.lookAt(myPlane.position);
-            }
-            
-            renderer.render(scene, camera);
-        };
-        
-        const handleKeyDown = (e: KeyboardEvent) => { keysPressed[e.key.toLowerCase()] = true; };
-        const handleKeyUp = (e: KeyboardEvent) => { keysPressed[e.key.toLowerCase()] = false; };
-        const handleMouseDown = (e: MouseEvent) => { if(e.button === 0) keysPressed['mouse0'] = true; };
-        const handleMouseUp = (e: MouseEvent) => { if(e.button === 0) keysPressed['mouse0'] = false; };
-        
-        if (mode === 'online') {
-            if (hasActiveJoinRequest) return;
-            hasActiveJoinRequest = true;
-
-            const protocol = window.location.protocol === "https:" ? "wss" : "ws";
-            const endpoint = `${protocol}://${window.location.host}`;
-            client = new Colyseus.Client(endpoint);
-            
-            joinRequest = client.joinOrCreate<VoxelAcesState>("voxel_aces_room", { playerName: playerNameProp });
-
-            joinRequest.then(room => {
-                roomRef.current = room;
-                setGameStatus('playing');
-
-                room.onLeave(() => {
-                    console.log("Disconnected from room.");
-                    if (gameStatusRef.current !== 'gameover') {
-                       setGameStatus('gameover'); 
-                    }
-                });
-
-                room.state.players.onAdd((player, sessionId) => {
-                    const isMe = sessionId === room.sessionId;
-                    const color = isMe ? 0x0077ff : 0xffaa00;
-                    const planeMesh = createVoxelPlane(color);
-                    
-                    planeMesh.position.set(player.x, player.y, player.z);
-                    planeMesh.quaternion.set(player.qx, player.qy, player.qz, player.qw);
-                    
-                    localPlanes[sessionId] = planeMesh;
-                    scene.add(planeMesh);
-
-                    player.onChange = () => {
-                        // Snap to server position to ensure movement is always responsive
+                    room.state.players.onAdd((player, sessionId) => {
+                        const isMe = sessionId === room?.sessionId;
+                        const color = isMe ? 0x0077ff : 0xffaa00;
+                        const planeMesh = createVoxelPlane(color);
+                        
                         planeMesh.position.set(player.x, player.y, player.z);
                         planeMesh.quaternion.set(player.qx, player.qy, player.qz, player.qw);
                         
-                        if(isMe) {
-                            const currentHealth = player.health;
-                            const currentStatus = gameStatusRef.current;
+                        localPlanes[sessionId] = planeMesh;
+                        scene.add(planeMesh);
 
-                            setPlayerHealth(currentHealth);
-                            setScore(player.kills);
+                        player.onChange = () => {
+                            if (!localPlanes[sessionId]) return;
+                            localPlanes[sessionId].position.set(player.x, player.y, player.z);
+                            localPlanes[sessionId].quaternion.set(player.qx, player.qy, player.qz, player.qw);
+                            
+                            if (isMe) {
+                                setPlayerHealth(player.health);
+                                setScore(player.kills);
+                                setGunOverheat(player.gunOverheat);
 
-                            if (currentHealth <= 0 && currentStatus === 'playing') {
-                                setGameStatus('gameover');
-                            } else if (currentHealth > 0 && currentStatus === 'gameover') {
-                                setGameStatus('playing');
+                                if (player.health <= 0 && gameStatusRef.current === 'playing') {
+                                    setGameStatus('gameover');
+                                } else if (player.health > 0 && gameStatusRef.current === 'gameover') {
+                                    setGameStatus('playing');
+                                }
                             }
-                        }
-                    };
-                });
-                
-                room.state.players.onRemove((player, sessionId) => {
-                    if (localPlanes[sessionId]) {
-                        scene.remove(localPlanes[sessionId]);
-                        delete localPlanes[sessionId];
-                    }
-                });
-
-                room.state.bullets.onAdd((bullet, bulletId) => {
-                    const bulletGeo = new THREE.BoxGeometry(0.2, 0.2, 1);
-                    const bulletMat = new THREE.MeshBasicMaterial({ color: 0xffff00 });
-                    const bulletMesh = new THREE.Mesh(bulletGeo, bulletMat);
-                    bulletMesh.position.set(bullet.x, bullet.y, bullet.z);
-                    localBulletsOnline[bulletId] = bulletMesh;
-                    scene.add(bulletMesh);
-
-                    bullet.onChange = () => {
-                        bulletMesh.position.set(bullet.x, bullet.y, bullet.z);
-                    }
-                });
-                
-                room.state.bullets.onRemove((bullet, bulletId) => {
-                    if(localBulletsOnline[bulletId]) {
-                        scene.remove(localBulletsOnline[bulletId]);
-                        delete localBulletsOnline[bulletId];
-                    }
-});
-
-                inputInterval = setInterval(() => {
-                    if (roomRef.current && gameStatusRef.current === 'playing') {
-                        const playerInput = {
-                            w: !!keysPressed['w'], s: !!keysPressed['s'], a: !!keysPressed['a'], d: !!keysPressed['d'],
-                            shift: !!keysPressed['shift'], space: !!keysPressed[' '], mouse0: !!keysPressed['mouse0'],
                         };
-                        roomRef.current.send("input", playerInput);
-                    }
-                }, 1000 / 20); // 20hz
+                    });
+                    
+                    room.state.players.onRemove((_, sessionId) => {
+                        if (localPlanes[sessionId]) {
+                            scene.remove(localPlanes[sessionId]);
+                            delete localPlanes[sessionId];
+                        }
+                    });
 
-            }).catch(e => {
-                console.error("JOIN ERROR", e);
-                router.push('/online');
-            }).finally(() => {
-                hasActiveJoinRequest = false;
-            });
-        } else {
-            setGameStatus('menu'); 
+                    room.state.bullets.onAdd((bullet, bulletId) => {
+                        const bulletGeo = new THREE.BoxGeometry(0.2, 0.2, 1);
+                        const bulletMat = new THREE.MeshBasicMaterial({ color: 0xffff00 });
+                        const bulletMesh = new THREE.Mesh(bulletGeo, bulletMat);
+                        bulletMesh.position.set(bullet.x, bullet.y, bullet.z);
+                        localBullets[bulletId] = bulletMesh;
+                        scene.add(bulletMesh);
+
+                        bullet.onChange = () => {
+                            if (bulletMesh) bulletMesh.position.set(bullet.x, bullet.y, bullet.z);
+                        }
+                    });
+                    
+                    room.state.bullets.onRemove((_, bulletId) => {
+                        if(localBullets[bulletId]) {
+                            scene.remove(localBullets[bulletId]);
+                            delete localBullets[bulletId];
+                        }
+                    });
+
+                    inputInterval = setInterval(() => {
+                        if (room && gameStatusRef.current === 'playing') {
+                            const playerInput = {
+                                w: !!keysPressed['w'], s: !!keysPressed['s'], a: !!keysPressed['a'], d: !!keysPressed['d'],
+                                shift: !!keysPressed['shift'], space: !!keysPressed[' '], mouse0: !!keysPressed['mouse0'],
+                            };
+                            room.send("input", playerInput);
+                        }
+                    }, 1000 / 20); // 20hz
+
+                } catch (e) {
+                    console.error("JOIN ERROR", e);
+                    router.push('/online');
+                }
+            }
+            
+            // ======== EVENT LISTENERS ========
+            const handleKeyDown = (e: KeyboardEvent) => { keysPressed[e.key.toLowerCase()] = true; };
+            const handleKeyUp = (e: KeyboardEvent) => { keysPressed[e.key.toLowerCase()] = false; };
+            const handleMouseDown = (e: MouseEvent) => { if(e.button === 0) keysPressed['mouse0'] = true; };
+            const handleMouseUp = (e: MouseEvent) => { if(e.button === 0) keysPressed['mouse0'] = false; };
+            const handleResize = () => {
+                if (!mountRef.current) return;
+                camera.aspect = mountRef.current.clientWidth / mountRef.current.clientHeight;
+                camera.updateProjectionMatrix();
+                renderer.setSize(mountRef.current.clientWidth, mountRef.current.clientHeight);
+            };
+            
+            window.addEventListener('keydown', handleKeyDown);
+            window.addEventListener('keyup', handleKeyUp);
+            window.addEventListener('mousedown', handleMouseDown);
+            window.addEventListener('mouseup', handleMouseUp);
+            window.addEventListener('resize', handleResize);
+            
+            // ======== START GAME LOOP ========
+            let lastTime = 0;
+            const gameLoop = (time: number) => {
+                if (!isMounted) return;
+                animationFrameId = requestAnimationFrame(gameLoop);
+                const delta = lastTime > 0 ? (time - lastTime) / 1000 : 1/60;
+                lastTime = time;
+
+                if (gameStatusRef.current !== 'playing') {
+                   renderer.render(scene, camera);
+                   return; 
+                }
+                
+                let myPlane: THREE.Group | null = null;
+                const myId = room?.sessionId;
+                if (mode === 'online') {
+                    myPlane = myId ? localPlanes[myId] : null;
+                } else {
+                    myPlane = localPlanes['offline_player'];
+                }
+
+                // --- OFFLINE MODE LOGIC ---
+                if (mode === 'offline') {
+                    const input = {
+                        w: !!keysPressed['w'], s: !!keysPressed['s'], a: !!keysPressed['a'], d: !!keysPressed['d'],
+                        shift: !!keysPressed['shift'], space: !!keysPressed[' '], mouse0: !!keysPressed['mouse0'],
+                    };
+
+                    if (input.w) offlinePlayer.quaternion.multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), -PITCH_SPEED * delta));
+                    if (input.s) offlinePlayer.quaternion.multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), PITCH_SPEED * delta));
+                    if (input.a) offlinePlayer.quaternion.multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 0, 1), ROLL_SPEED * delta));
+                    if (input.d) offlinePlayer.quaternion.multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 0, 1), -ROLL_SPEED * delta));
+
+                    const speed = input.shift ? BASE_SPEED * BOOST_MULTIPLIER : BASE_SPEED;
+                    const forward = new THREE.Vector3(0, 0, -1).applyQuaternion(offlinePlayer.quaternion);
+                    offlinePlayer.position.add(forward.multiplyScalar(speed * delta));
+
+                    if (myPlane) {
+                        myPlane.position.copy(offlinePlayer.position);
+                        myPlane.quaternion.copy(offlinePlayer.quaternion);
+                    }
+                    
+                    offlinePlayer.gunCooldown = Math.max(0, offlinePlayer.gunCooldown - delta);
+                    offlinePlayer.gunOverheat = Math.max(0, offlinePlayer.gunOverheat - 15 * delta);
+                    setGunOverheat(offlinePlayer.gunOverheat);
+
+                    if ((input.space || input.mouse0) && offlinePlayer.gunCooldown <= 0 && offlinePlayer.gunOverheat < 100) {
+                        offlinePlayer.gunCooldown = 0.1;
+                        offlinePlayer.gunOverheat += 5;
+
+                        const bulletId = Math.random().toString(36).substring(2, 15);
+                        const bulletVelocity = new THREE.Vector3(0, 0, -BULLET_SPEED).applyQuaternion(offlinePlayer.quaternion);
+                        const bullet = { id: bulletId, position: myPlane.position.clone(), velocity: bulletVelocity, spawnTime: time };
+                        localOfflineBullets.push(bullet);
+                
+                        const bulletGeo = new THREE.BoxGeometry(0.2, 0.2, 1);
+                        const bulletMat = new THREE.MeshBasicMaterial({ color: 0xffff00 });
+                        const bulletMesh = new THREE.Mesh(bulletGeo, bulletMat);
+                        bulletMesh.position.copy(bullet.position);
+                        localOfflineBulletMeshes[bulletId] = bulletMesh;
+                        scene.add(bulletMesh);
+                    }
+
+                    // Update local offline bullets
+                    const now = time;
+                    for (let i = localOfflineBullets.length - 1; i >= 0; i--) {
+                        const bullet = localOfflineBullets[i];
+                        bullet.position.add(bullet.velocity.clone().multiplyScalar(delta));
+                        
+                        const bulletMesh = localOfflineBulletMeshes[bullet.id];
+                        if (bulletMesh) bulletMesh.position.copy(bullet.position);
+
+                        if (now - bullet.spawnTime > BULLET_LIFESPAN_MS) {
+                            if (bulletMesh) scene.remove(bulletMesh);
+                            delete localOfflineBulletMeshes[bullet.id];
+                            localOfflineBullets.splice(i, 1);
+                        }
+                    }
+                    
+                    // Offline death check
+                    setPlayerHealth(offlinePlayer.health);
+                    if ( myPlane.position.y < GROUND_Y || altitudeWarningTimer <= 0 || boundaryWarningTimer <= 0 ) {
+                        offlinePlayer.health = 0;
+                        setPlayerHealth(0);
+                        setGameStatus('gameover');
+                    }
+                }
+
+                // --- SHARED LOGIC (CAMERA, WARNINGS) ---
+                if (myPlane) {
+                    const currentAltitude = myPlane.position.y - ground.position.y;
+                    setAltitude(currentAltitude);
+                    
+                    let altWarn = false;
+                    if (currentAltitude > MAX_ALTITUDE) {
+                        altWarn = true;
+                        setAltitudeWarningTimer(t => Math.max(0, t - delta));
+                        const opacity = Math.max(0, 1 - (altitudeWarningTimer / 5));
+                        setWhiteoutOpacity(opacity);
+                    } else {
+                        setAltitudeWarningTimer(5);
+                        setWhiteoutOpacity(0);
+                    }
+                    setShowAltitudeWarning(altWarn && gameStatusRef.current === 'playing');
+
+                    let boundaryWarn = false;
+                    if (Math.abs(myPlane.position.x) > BOUNDARY || Math.abs(myPlane.position.z) > BOUNDARY) {
+                       boundaryWarn = true;
+                       setBoundaryWarningTimer(t => Math.max(0, t - delta));
+                    } else {
+                       setBoundaryWarningTimer(7);
+                    }
+                    setShowBoundaryWarning(boundaryWarn && gameStatusRef.current === 'playing');
+
+                    const cameraOffset = new THREE.Vector3(0, 8, 15);
+                    const idealOffset = cameraOffset.clone().applyQuaternion(myPlane.quaternion);
+                    const idealPosition = myPlane.position.clone().add(idealOffset);
+                    camera.position.lerp(idealPosition, 0.1);
+                    camera.lookAt(myPlane.position);
+                }
+                
+                renderer.render(scene, camera);
+            };
+            
+            gameLoop(performance.now());
         }
 
-        window.addEventListener('keydown', handleKeyDown);
-        window.addEventListener('keyup', handleKeyUp);
-        window.addEventListener('mousedown', handleMouseDown);
-        window.addEventListener('mouseup', handleMouseUp);
-        window.addEventListener('resize', handleResize);
-        
-        gameLoop(performance.now());
-        
+        init();
+
         return () => {
+            isMounted = false;
             cancelAnimationFrame(animationFrameId);
             if (inputInterval) clearInterval(inputInterval);
             
-            roomRef.current?.leave();
+            room?.leave();
+            room = null;
             
-            window.removeEventListener('keydown', handleKeyDown);
-            window.removeEventListener('keyup', handleKeyUp);
-            window.removeEventListener('mousedown', handleMouseDown);
-            window.removeEventListener('mouseup', handleMouseUp);
-            window.removeEventListener('resize', handleResize);
-            
+            // Remove event listeners
+            window.removeEventListener('keydown', (e) => keysPressed[e.key.toLowerCase()] = true);
+            window.removeEventListener('keyup', (e) => keysPressed[e.key.toLowerCase()] = false);
+            window.removeEventListener('mousedown', (e) => { if(e.button === 0) keysPressed['mouse0'] = true; });
+            window.removeEventListener('mouseup', (e) => { if(e.button === 0) keysPressed['mouse0'] = false; });
+            window.removeEventListener('resize', () => {});
+
+
+            // Dispose Three.js objects
             Object.values(localPlanes).forEach(plane => scene.remove(plane));
-            Object.values(localBulletsOnline).forEach(bullet => scene.remove(bullet));
-            if(playerPlaneRef.current) scene.remove(playerPlaneRef.current);
-            Object.values(localBulletMeshes).forEach(bullet => scene.remove(bullet));
-
-
+            Object.values(localBullets).forEach(bullet => scene.remove(bullet));
+            Object.values(localOfflineBulletMeshes).forEach(bullet => scene.remove(bullet));
+            
             if(mountRef.current && renderer.domElement && mountRef.current.contains(renderer.domElement)) {
                 mountRef.current.removeChild(renderer.domElement);
             }
             renderer.dispose();
+            scene.clear();
         };
-    }, [mode, playerNameProp, router, handlePlayAgain]); // Re-run effect only when mode or player name changes
+    }, [mode, playerNameProp, router]);
+
+    const handlePlayAgain = useCallback(() => {
+        if (mode === 'online' && room) {
+            room.send("respawn");
+            setGameStatus('playing');
+        } else {
+            // For offline, we just reset the router to re-trigger the component
+             router.replace('/play');
+        }
+    }, [mode, router, room]);
+
 
     return (
         <div className="relative w-screen h-screen bg-background overflow-hidden" onContextMenu={(e) => e.preventDefault()}>
@@ -536,11 +525,9 @@ export default function Game({ mode, playerName: playerNameProp }: GameProps) {
                 </div>
             )}
             
-            {_gameStatus === 'playing' && roomRef.current && roomRef.current.state.players ? (
-                 <HUD score={score} wave={wave} health={playerHealth} overheat={0} altitude={altitude} mode={mode} serverId={roomRef.current.id} players={roomRef.current.state.players} />
-            ) : _gameStatus === 'playing' && mode === 'offline' ? (
-                 <HUD score={score} wave={wave} health={playerHealth} overheat={0} altitude={altitude} mode={mode} />
-            ): null}
+            {_gameStatus === 'playing' ? (
+                 <HUD score={score} wave={wave} health={playerHealth} overheat={gunOverheat} altitude={altitude} mode={mode} />
+            ) : null}
 
             {_gameStatus === 'gameover' && (
                 <div className="absolute inset-0 flex items-center justify-center bg-black/50 z-10">

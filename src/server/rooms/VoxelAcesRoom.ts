@@ -8,7 +8,6 @@ const BASE_SPEED = 60;
 const BOOST_MULTIPLIER = 2.0;
 const PITCH_SPEED = 2.5; 
 const ROLL_SPEED = 2.5;
-const YAW_SPEED = 1.0;
 const MAX_ALTITUDE = 220;
 const BOUNDARY = 950;
 const GROUND_Y = -50;
@@ -19,14 +18,11 @@ const PLAYER_HEALTH = 100;
 export class VoxelAcesRoom extends Room<VoxelAcesState> {
     maxClients = 16;
     
-    // Using a map to store the full THREE.js objects for server-side physics
     serverPlayers: Map<string, { position: THREE.Vector3, quaternion: THREE.Quaternion, input: any, gunCooldown: number, gunOverheat: number }> = new Map();
     serverBullets: Map<string, { position: THREE.Vector3, velocity: THREE.Vector3, spawnTime: number, ownerId: string }> = new Map();
 
     onCreate(options: any) {
         this.setState(new VoxelAcesState());
-
-        // The main game loop
         this.setSimulationInterval((deltaTime) => this.update(deltaTime / 1000));
 
         this.onMessage("input", (client, input) => {
@@ -38,9 +34,9 @@ export class VoxelAcesRoom extends Room<VoxelAcesState> {
 
         this.onMessage("respawn", (client) => {
             const playerState = this.state.players.get(client.sessionId);
-            if (playerState && playerState.health <= 0) {
-                const serverPlayer = this.serverPlayers.get(client.sessionId);
-                
+            const serverPlayer = this.serverPlayers.get(client.sessionId);
+
+            if (playerState && serverPlayer && playerState.health <= 0) {
                 playerState.health = PLAYER_HEALTH;
                 playerState.x = (Math.random() - 0.5) * 500;
                 playerState.y = 50;
@@ -49,11 +45,12 @@ export class VoxelAcesRoom extends Room<VoxelAcesState> {
                 playerState.qy = 0;
                 playerState.qz = 0;
                 playerState.qw = 1;
+                playerState.kills = 0;
 
-                if (serverPlayer) {
-                    serverPlayer.position.set(playerState.x, playerState.y, playerState.z);
-                    serverPlayer.quaternion.set(0, 0, 0, 1);
-                }
+                serverPlayer.position.set(playerState.x, playerState.y, playerState.z);
+                serverPlayer.quaternion.set(0, 0, 0, 1);
+                serverPlayer.gunCooldown = 0;
+                serverPlayer.gunOverheat = 0;
             }
         });
     }
@@ -67,6 +64,7 @@ export class VoxelAcesRoom extends Room<VoxelAcesState> {
         player.y = 50;
         player.z = (Math.random() - 0.5) * 500;
         player.health = PLAYER_HEALTH;
+        player.gunOverheat = 0;
 
         this.state.players.set(client.sessionId, player);
 
@@ -108,7 +106,6 @@ export class VoxelAcesRoom extends Room<VoxelAcesState> {
             const forward = new THREE.Vector3(0, 0, -1).applyQuaternion(serverPlayer.quaternion);
             serverPlayer.position.add(forward.multiplyScalar(speed * delta));
 
-            // Update state for client
             player.x = serverPlayer.position.x;
             player.y = serverPlayer.position.y;
             player.z = serverPlayer.position.z;
@@ -120,6 +117,7 @@ export class VoxelAcesRoom extends Room<VoxelAcesState> {
             // Shooting logic
             serverPlayer.gunCooldown = Math.max(0, serverPlayer.gunCooldown - delta);
             serverPlayer.gunOverheat = Math.max(0, serverPlayer.gunOverheat - 15 * delta);
+            player.gunOverheat = serverPlayer.gunOverheat;
 
             if ((input.space || input.mouse0) && serverPlayer.gunCooldown <= 0 && serverPlayer.gunOverheat < 100) {
                 serverPlayer.gunCooldown = 0.1;
@@ -143,9 +141,9 @@ export class VoxelAcesRoom extends Room<VoxelAcesState> {
                 });
             }
             
-            // Boundary checks & respawn
+            // Boundary checks (authoritative)
             if (player.y < GROUND_Y || Math.abs(player.x) > BOUNDARY || Math.abs(player.z) > BOUNDARY || player.y > MAX_ALTITUDE) {
-                player.health = 0;
+                if (player.health > 0) player.health = 0;
             }
         });
 
@@ -167,7 +165,6 @@ export class VoxelAcesRoom extends Room<VoxelAcesState> {
         this.serverBullets.forEach((bullet, bulletId) => {
             bullet.position.add(bullet.velocity.clone().multiplyScalar(delta));
 
-            // update client state
             const bulletState = this.state.bullets.get(bulletId);
             if(bulletState) {
                 bulletState.x = bullet.position.x;
@@ -199,7 +196,7 @@ export class VoxelAcesRoom extends Room<VoxelAcesState> {
 
                     this.serverBullets.delete(bulletId);
                     this.state.bullets.delete(bulletId);
-                    break; // Bullet is destroyed, stop checking
+                    break;
                 }
             }
         });

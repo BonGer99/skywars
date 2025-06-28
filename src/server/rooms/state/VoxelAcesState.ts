@@ -11,6 +11,7 @@ export class Player extends Schema {
     @type("number") qw: number = 1;
     @type("number") health: number = 100;
     @type("number") kills: number = 0;
+    @type("number") gunOverheat: number = 0;
     @type("boolean") isAI: boolean = false;
 }
 
