@@ -717,7 +717,7 @@ export default function Game({ mode, serverId: serverIdProp, playerName: playerN
                 </div>
             )}
 
-            {showAltitudeWarning && (
+            {showAltitudeWarning && gameState === 'playing' && (
                 <div className="absolute top-1/3 left-1/2 -translate-x-1/2 z-20 text-center">
                     <Card className="bg-destructive/80 text-destructive-foreground p-4 border-2 border-destructive-foreground">
                         <CardTitle className="text-3xl font-bold">WARNING: ALTITUDE CRITICAL</CardTitle>
@@ -731,7 +731,7 @@ export default function Game({ mode, serverId: serverIdProp, playerName: playerN
                 </div>
             )}
 
-            {showBoundaryWarning && (
+            {showBoundaryWarning && gameState === 'playing' && (
                 <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 z-20 text-center">
                     <Card className="bg-destructive/80 text-destructive-foreground p-4 border-2 border-destructive-foreground">
                         <CardTitle className="text-3xl font-bold">WARNING: LEAVING BATTLEFIELD</CardTitle>
