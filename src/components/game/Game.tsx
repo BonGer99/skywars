@@ -265,8 +265,16 @@ export default function Game({ mode, serverId: serverIdProp, playerName: playerN
                 camera.position.lerp(idealPosition, 0.1);
                 camera.lookAt(playerRef.current.position);
             }
+            
+            // Client-side visual interpolation for the main player
+            if (playerRef.current?.userData?.serverPosition) {
+                playerRef.current.position.lerp(playerRef.current.userData.serverPosition, 0.2);
+            }
+            if (playerRef.current?.userData?.serverQuaternion) {
+                playerRef.current.quaternion.slerp(playerRef.current.userData.serverQuaternion, 0.2);
+            }
 
-            // Client-side visual interpolation
+            // Client-side visual interpolation for other players
             Object.values(localPlanesRef.current).forEach(p => {
                 if (p.mesh.userData.serverPosition) {
                     p.mesh.position.lerp(p.mesh.userData.serverPosition, 0.2);
@@ -313,7 +321,7 @@ export default function Game({ mode, serverId: serverIdProp, playerName: playerN
             setGameState('playing');
             
             stateUpdateInterval = setInterval(async () => {
-              if (gameStateRef.current === 'gameover') return;
+              if (gameStateRef.current === 'gameover' || !serverIdProp) return;
               
               const state = await GameActions.getFullState(serverIdProp);
               if (!state || !state.players) return;
@@ -551,5 +559,7 @@ export default function Game({ mode, serverId: serverIdProp, playerName: playerN
         </div>
     );
 }
+
+    
 
     
