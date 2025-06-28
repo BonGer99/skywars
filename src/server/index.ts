@@ -3,7 +3,7 @@ import http from 'http';
 import express from 'express';
 import cors from 'cors';
 import next from 'next';
-import { Server } from 'colyseus';
+import { Server, WebSocketTransport } from 'colyseus';
 import { VoxelAcesRoom } from './rooms/VoxelAcesRoom';
 
 const port = Number(process.env.PORT || 3000);
@@ -19,7 +19,9 @@ nextApp.prepare().then(() => {
 
   const server = http.createServer(app);
   const gameServer = new Server({
-    server,
+    transport: new WebSocketTransport({
+      server,
+    }),
   });
 
   // Register your room handlers
