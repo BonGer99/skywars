@@ -93,6 +93,11 @@ export default function Game({ mode, serverId: serverIdProp, playerName: playerN
     // Mutable Refs for state inside the game loop
     const playerIdRef = useRef<string | null>(null);
     const gameInitializedRef = useRef(false);
+    const gameStateRef = useRef<GameState>(gameState);
+    useEffect(() => {
+        gameStateRef.current = gameState;
+    }, [gameState]);
+
     
     // THREE.js & Game Object Refs
     const playerRef = useRef<THREE.Group | null>(null);
@@ -211,7 +216,7 @@ export default function Game({ mode, serverId: serverIdProp, playerName: playerN
             const delta = lastTime > 0 ? (time - lastTime) / 1000 : 1/60;
             lastTime = time;
 
-            if (gameState === 'playing' && playerRef.current) {
+            if (gameStateRef.current === 'playing' && playerRef.current) {
                 // In online mode, the server handles physics. Here we just send input.
                 if(mode === 'online' && serverIdProp && playerIdRef.current) {
                     const playerInput = {
@@ -237,7 +242,7 @@ export default function Game({ mode, serverId: serverIdProp, playerName: playerN
                 setAltitude(currentAltitude);
                 
                 if (currentAltitude > MAX_ALTITUDE) {
-                    if(gameState === 'playing') setShowAltitudeWarning(true);
+                    if(gameStateRef.current === 'playing') setShowAltitudeWarning(true);
                     setAltitudeWarningTimer(t => Math.max(0, t - delta));
                     const opacity = Math.max(0, 1 - (altitudeWarningTimer / 5));
                     setWhiteoutOpacity(opacity);
@@ -247,12 +252,18 @@ export default function Game({ mode, serverId: serverIdProp, playerName: playerN
                     setWhiteoutOpacity(0);
                 }
                  if (Math.abs(player.position.x) > BOUNDARY || Math.abs(player.position.z) > BOUNDARY) {
-                    if(gameState === 'playing') setShowBoundaryWarning(true);
+                    if(gameStateRef.current === 'playing') setShowBoundaryWarning(true);
                     setBoundaryWarningTimer(t => Math.max(0, t - delta));
                 } else {
                     setShowBoundaryWarning(false);
                     setBoundaryWarningTimer(7);
                 }
+
+                const cameraOffset = new THREE.Vector3(0, 8, 15);
+                const idealOffset = cameraOffset.clone().applyQuaternion(playerRef.current.quaternion);
+                const idealPosition = playerRef.current.position.clone().add(idealOffset);
+                camera.position.lerp(idealPosition, 0.1);
+                camera.lookAt(playerRef.current.position);
             }
 
             // Client-side visual interpolation
@@ -273,14 +284,6 @@ export default function Game({ mode, serverId: serverIdProp, playerName: playerN
                     scene.remove(bullet.mesh);
                     delete localBulletsRef.current[bulletId];
                 }
-            }
-
-            if (playerRef.current) {
-                const cameraOffset = new THREE.Vector3(0, 8, 15);
-                const idealOffset = cameraOffset.clone().applyQuaternion(playerRef.current.quaternion);
-                const idealPosition = playerRef.current.position.clone().add(idealOffset);
-                camera.position.lerp(idealPosition, 0.1);
-                camera.lookAt(playerRef.current.position);
             }
             
             renderer.render(scene, camera);
@@ -310,7 +313,7 @@ export default function Game({ mode, serverId: serverIdProp, playerName: playerN
             setGameState('playing');
             
             stateUpdateInterval = setInterval(async () => {
-              if (gameState === 'gameover') return;
+              if (gameStateRef.current === 'gameover') return;
               
               const state = await GameActions.getFullState(serverIdProp);
               if (!state || !state.players) return;
@@ -326,10 +329,10 @@ export default function Game({ mode, serverId: serverIdProp, playerName: playerN
                   setPlayerHealth(myState.health);
                   setScore(myState.kills);
 
-                  if (myState.health <= 0 && gameState !== 'gameover') {
+                  if (myState.health <= 0 && gameStateRef.current !== 'gameover') {
                       setGameState('gameover');
                   }
-              } else if (gameState === 'playing' && myId) {
+              } else if (gameStateRef.current === 'playing' && myId) {
                   // I've been removed from the server state (e.g., timed out)
                   setGameState('gameover');
               }
@@ -548,3 +551,5 @@ export default function Game({ mode, serverId: serverIdProp, playerName: playerN
         </div>
     );
 }
+
+    
