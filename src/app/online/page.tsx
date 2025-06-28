@@ -15,15 +15,14 @@ import { db } from '@/lib/firebase';
 import { collection, query, onSnapshot, doc, getDoc, setDoc } from 'firebase/firestore';
 import { Alert, AlertTitle, AlertDescription } from '@/components/ui/alert';
 
-type Server = {
+type ServerInfo = {
   id: string;
   name: string;
   region: string;
-  players: number;
   maxPlayers: number;
 };
 
-const initialServers: Omit<Server, 'players'>[] = [
+const initialServers: Omit<ServerInfo, 'id'> & { id: string }[] = [
   { id: 'europe-server', name: 'Aces High - Europe', region: 'Europe', maxPlayers: 24 },
 ];
 
@@ -36,7 +35,7 @@ async function seedServers() {
 
             if (!docSnap.exists()) {
                 console.log(`Server ${serverData.id} not found, seeding...`);
-                await setDoc(serverRef, { ...serverData, players: 0 });
+                await setDoc(serverRef, { ...serverData, players: 0 }); // Seed with deprecated players field
             }
         }
         console.log('Server check complete.');
@@ -49,7 +48,8 @@ async function seedServers() {
 
 function OnlinePageContent() {
   const router = useRouter();
-  const [servers, setServers] = useState<Server[]>([]);
+  const [servers, setServers] = useState<ServerInfo[]>([]);
+  const [playerCounts, setPlayerCounts] = useState<Record<string, number>>({});
   const [playerName, setPlayerName] = useState('');
   const [isJoining, setIsJoining] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
@@ -70,14 +70,15 @@ function OnlinePageContent() {
     });
   }, [toast]);
 
+  // Effect to get static server metadata
   useEffect(() => {
     memoizedSeedServers();
 
     const q = query(collection(db, 'servers'));
     const unsubscribe = onSnapshot(q, (querySnapshot) => {
-      const serversData: Server[] = [];
+      const serversData: ServerInfo[] = [];
       querySnapshot.forEach((doc) => {
-        serversData.push({ id: doc.id, ...doc.data() } as Server);
+        serversData.push({ id: doc.id, ...doc.data() } as ServerInfo);
       });
       setServers(serversData);
       setError(null);
@@ -91,8 +92,37 @@ function OnlinePageContent() {
 
     return () => unsubscribe();
   }, [memoizedSeedServers]);
+  
+  // Effect to get live player counts for each server
+  useEffect(() => {
+    if (servers.length === 0) return;
 
-  const handleJoinServer = async (server: Server) => {
+    const unsubscribers = servers.map(server => {
+      const playersQuery = query(collection(db, 'servers', server.id, 'players'));
+
+      return onSnapshot(playersQuery, (snapshot) => {
+        const now = Date.now();
+        const STALE_THRESHOLD_MS = 15000; // 15 seconds
+        let activePlayers = 0;
+
+        snapshot.forEach(doc => {
+          const playerData = doc.data();
+          const lastSeenTimestamp = playerData.lastSeen?.toDate()?.getTime();
+          if (lastSeenTimestamp && (now - lastSeenTimestamp) < STALE_THRESHOLD_MS) {
+            activePlayers++;
+          }
+        });
+
+        setPlayerCounts(prev => ({ ...prev, [server.id]: activePlayers }));
+      });
+    });
+
+    return () => {
+      unsubscribers.forEach(unsub => unsub());
+    };
+  }, [servers]);
+
+  const handleJoinServer = async (server: ServerInfo) => {
     if (!playerName) {
       toast({
         title: "Enter your callsign!",
@@ -101,8 +131,10 @@ function OnlinePageContent() {
       });
       return;
     }
+    
+    const playerCount = playerCounts[server.id] ?? 0;
 
-    if (server.players >= server.maxPlayers) {
+    if (playerCount >= server.maxPlayers) {
       toast({
         title: "Server Full",
         description: "This server is currently full. Please try another one.",
@@ -113,8 +145,6 @@ function OnlinePageContent() {
 
     setIsJoining(server.id);
 
-    // We just navigate to the game page with the server and player name.
-    // The Game component itself will handle creating the player in the database.
     router.push(`/online-game?server=${server.id}&playerName=${encodeURIComponent(playerName)}`);
   };
 
@@ -157,27 +187,31 @@ function OnlinePageContent() {
                 </div>
               ) : (
                 <div className="border rounded-lg">
-                  {servers.map((server) => (
-                    <div key={server.id} className="flex items-center justify-between p-4 border-b last:border-b-0">
-                        <div>
-                            <p className="font-semibold text-lg">{server.name}</p>
-                            <p className="text-sm text-muted-foreground">{server.region}</p>
-                        </div>
-                        <div className="flex items-center gap-4">
-                            <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                                <Users className="h-4 w-4" />
-                                <span>{server.players} / {server.maxPlayers}</span>
+                  {servers.map((server) => {
+                    const playerCount = playerCounts[server.id] ?? 0;
+                    const isFull = playerCount >= server.maxPlayers;
+                    return (
+                        <div key={server.id} className="flex items-center justify-between p-4 border-b last:border-b-0">
+                            <div>
+                                <p className="font-semibold text-lg">{server.name}</p>
+                                <p className="text-sm text-muted-foreground">{server.region}</p>
                             </div>
-                            <Button 
-                                onClick={() => handleJoinServer(server)} 
-                                disabled={isJoining === server.id || server.players >= server.maxPlayers}
-                              >
-                               {isJoining === server.id ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
-                               {server.players >= server.maxPlayers ? 'Full' : 'Join'}
-                             </Button>
+                            <div className="flex items-center gap-4">
+                                <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                                    <Users className="h-4 w-4" />
+                                    <span>{playerCount} / {server.maxPlayers}</span>
+                                </div>
+                                <Button 
+                                    onClick={() => handleJoinServer(server)} 
+                                    disabled={isJoining === server.id || isFull}
+                                >
+                                {isJoining === server.id ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+                                {isFull ? 'Full' : 'Join'}
+                                </Button>
+                            </div>
                         </div>
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
               )}
             </div>

@@ -13,7 +13,7 @@ import { AlertDialog, AlertDialogTrigger, AlertDialogContent, AlertDialogHeader,
 import { Input } from '@/components/ui/input';
 import { useToast } from "@/hooks/use-toast";
 import { db } from '@/lib/firebase';
-import { doc, runTransaction, onSnapshot, collection, addDoc, serverTimestamp, deleteDoc, updateDoc } from 'firebase/firestore';
+import { doc, onSnapshot, collection, addDoc, serverTimestamp, deleteDoc, updateDoc } from 'firebase/firestore';
 
 
 type GameState = 'loading' | 'menu' | 'playing' | 'gameover';
@@ -415,7 +415,6 @@ export default function Game({ mode, serverId: serverIdProp, playerName: playerN
                 setGameState('menu');
             } else if (mode === 'online' && serverIdProp && playerNameProp) {
                 try {
-                    const serverRef = doc(db, 'servers', serverIdProp);
                     const randomPos = { x: (Math.random() - 0.5) * 500, y: 50, z: (Math.random() - 0.5) * 500 };
                     
                     const playerDocRef = await addDoc(collection(db, `servers/${serverIdProp}/players`), {
@@ -431,13 +430,6 @@ export default function Game({ mode, serverId: serverIdProp, playerName: playerN
                     playerIdRef.current = playerDocRef.id;
                     playerRef.current.position.set(randomPos.x, randomPos.y, randomPos.z);
                     playerRef.current.quaternion.set(0, 0, 0, 1);
-                    
-                    await runTransaction(db, async (transaction) => {
-                        const freshServerDoc = await transaction.get(serverRef);
-                        if (!freshServerDoc.exists()) throw new Error("Server does not exist!");
-                        const newPlayerCount = (freshServerDoc.data().players || 0) + 1;
-                        transaction.update(serverRef, { players: newPlayerCount });
-                    });
                     
                     const idealOffset = cameraOffsetRef.current.clone().applyQuaternion(playerRef.current.quaternion);
                     const idealPosition = playerRef.current.position.clone().add(idealOffset);
@@ -472,16 +464,9 @@ export default function Game({ mode, serverId: serverIdProp, playerName: playerN
             const pid = playerIdRef.current;
             if (mode === 'online' && serverIdProp && pid) {
                 const playerDocRef = doc(db, 'servers', serverIdProp, 'players', pid);
-                const serverRef = doc(db, 'servers', serverIdProp);
-                runTransaction(db, async (transaction) => {
-                    const serverDoc = await transaction.get(serverRef);
-                    if (serverDoc.exists()) {
-                        const currentPlayers = serverDoc.data().players || 1;
-                        const newPlayerCount = Math.max(0, currentPlayers - 1);
-                        transaction.update(serverRef, { players: newPlayerCount });
-                    }
-                    transaction.delete(playerDocRef);
-                }).catch(e => console.error("Error during cleanup transaction:", e));
+                deleteDoc(playerDocRef).catch(e => {
+                  console.warn("Could not delete player document on exit:", e.message);
+                });
             }
 
             if(mountRef.current && renderer.domElement) {
@@ -540,24 +525,24 @@ export default function Game({ mode, serverId: serverIdProp, playerName: playerN
 
                 const lastSeenTimestamp = data.lastSeen?.toDate()?.getTime();
                 if (!lastSeenTimestamp || (now - lastSeenTimestamp) > STALE_THRESHOLD_MS) {
-                    return; // Stale player, skip them. They'll be removed below.
+                    // Stale player, skip them. They'll be removed below.
+                } else {
+                    freshPlayerIds.add(id);
+                    let otherPlayer = currentPlayersOnScreen[id];
+
+                    if (!otherPlayer) {
+                        // Player is new or has come back online
+                        const newPlayerPlane = createVoxelPlane(new THREE.Color(0xffaa00));
+                        scene.add(newPlayerPlane);
+                        otherPlayersRef.current[id] = { mesh: newPlayerPlane, name: data.name || 'Unknown', health: data.health || 100 };
+                        otherPlayer = otherPlayersRef.current[id];
+                    }
+
+                    // Update position and rotation for the fresh player
+                    if (data.position) otherPlayer.mesh.position.lerp(new THREE.Vector3(data.position.x, data.position.y, data.position.z), 0.3);
+                    if (data.quaternion) otherPlayer.mesh.quaternion.slerp(new THREE.Quaternion(data.quaternion.x, data.quaternion.y, data.quaternion.z, data.quaternion.w), 0.3);
+                    otherPlayer.health = data.health;
                 }
-
-                freshPlayerIds.add(id);
-                let otherPlayer = currentPlayersOnScreen[id];
-
-                if (!otherPlayer) {
-                    // Player is new or has come back online
-                    const newPlayerPlane = createVoxelPlane(new THREE.Color(0xffaa00));
-                    scene.add(newPlayerPlane);
-                    otherPlayersRef.current[id] = { mesh: newPlayerPlane, name: data.name || 'Unknown', health: data.health || 100 };
-                    otherPlayer = otherPlayersRef.current[id];
-                }
-
-                // Update position and rotation for the fresh player
-                if (data.position) otherPlayer.mesh.position.lerp(new THREE.Vector3(data.position.x, data.position.y, data.position.z), 0.3);
-                if (data.quaternion) otherPlayer.mesh.quaternion.slerp(new THREE.Quaternion(data.quaternion.x, data.quaternion.y, data.quaternion.z, data.quaternion.w), 0.3);
-                otherPlayer.health = data.health;
             });
             
             // Garbage collect: Remove players from the scene who are no longer in the fresh list
@@ -732,5 +717,3 @@ export default function Game({ mode, serverId: serverIdProp, playerName: playerN
         </div>
     );
 }
-
-    
