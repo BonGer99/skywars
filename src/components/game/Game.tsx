@@ -1,3 +1,4 @@
+
 'use client';
 
 import * as THREE from 'three';
@@ -19,8 +20,8 @@ const MAX_ALTITUDE = 220;
 const GROUND_Y = -50;
 const BASE_SPEED = 60;
 const BOOST_MULTIPLIER = 2.0;
-const PITCH_SPEED = 2.0;
-const ROLL_SPEED = 2.0;
+const PITCH_SPEED = 1.5;
+const ROLL_SPEED = 1.5;
 const YAW_SPEED_MOBILE = 2.0;
 const VERTICAL_SPEED_MOBILE = 30;
 const BULLET_SPEED = 200;
@@ -508,7 +509,7 @@ export default function Game({ mode, playerName: playerNameProp }: GameProps) {
                          playerState.position.y -= joystick.y * VERTICAL_SPEED_MOBILE * delta;
                          
                          const targetRoll = -ROLL_SPEED * joystick.x * 0.5;
-                         const targetPitch = PITCH_SPEED * joystick.y * 0.3;
+                         const targetPitch = -PITCH_SPEED * joystick.y * 0.3;
                          const visualEuler = new THREE.Euler(targetPitch, 0, targetRoll, 'XYZ');
                          const visualQuaternion = new THREE.Quaternion().setFromEuler(visualEuler);
                          if (visualGroup) visualGroup.quaternion.slerp(visualQuaternion, 0.1);
@@ -576,10 +577,31 @@ export default function Game({ mode, playerName: playerNameProp }: GameProps) {
                     roomRef.current.state.players.forEach((player, sessionId) => {
                         const planeMesh = localPlanes[sessionId];
                         if(planeMesh) {
+                            const visualGroup = planeMesh.children[0] as THREE.Group;
+                            const isMe = sessionId === myId;
+                            
                             const newPos = new THREE.Vector3(player.x, player.y, player.z);
                             const newQuat = new THREE.Quaternion(player.qx, player.qy, player.qz, player.qw);
-                            planeMesh.position.lerp(newPos, INTERPOLATION_FACTOR);
-                            planeMesh.quaternion.slerp(newQuat, INTERPOLATION_FACTOR);
+
+                            // Apply arcade visual tilt for the local player
+                            if(isMe && myControlStyle === 'arcade') {
+                                const joystick = { ...joystickInput.current };
+                                const targetRoll = -ROLL_SPEED * joystick.x * 0.5;
+                                const targetPitch = -PITCH_SPEED * joystick.y * 0.3;
+                                const visualEuler = new THREE.Euler(targetPitch, 0, targetRoll, 'XYZ');
+                                const visualQuaternion = new THREE.Quaternion().setFromEuler(visualEuler);
+                                if (visualGroup) visualGroup.quaternion.slerp(visualQuaternion, 0.1);
+
+                                // The main body follows the server's quaternion
+                                planeMesh.position.lerp(newPos, INTERPOLATION_FACTOR);
+                                planeMesh.quaternion.slerp(newQuat, INTERPOLATION_FACTOR);
+                            } else {
+                                // For other players or realistic mode, just interpolate everything
+                                planeMesh.position.lerp(newPos, INTERPOLATION_FACTOR);
+                                planeMesh.quaternion.slerp(newQuat, INTERPOLATION_FACTOR);
+                                const visualGroup = planeMesh.children[0] as THREE.Group;
+                                if (visualGroup) visualGroup.quaternion.slerp(new THREE.Quaternion(), 0.1); // Reset visual tilt for others
+                            }
                         }
                     });
                     roomRef.current.state.bullets.forEach((bullet, bulletId) => {
@@ -700,3 +722,5 @@ export default function Game({ mode, playerName: playerNameProp }: GameProps) {
         </div>
     );
 }
+
+    
