@@ -4,6 +4,7 @@ import { VoxelAcesState, Player, Bullet } from "./state/VoxelAcesState";
 import * as THREE from 'three';
 
 // Constants
+const WORLD_SEED = 12345;
 const BASE_SPEED = 60;
 const BOOST_MULTIPLIER = 2.0;
 const PITCH_SPEED = 1.2; 
@@ -30,9 +31,14 @@ export class VoxelAcesRoom extends Room<VoxelAcesState> {
     
     serverPlayers: Map<string, ServerPlayerData> = new Map();
     serverBullets: Map<string, { position: THREE.Vector3, velocity: THREE.Vector3, spawnTime: number, ownerId: string }> = new Map();
+    collidableObjects: THREE.Box3[] = [];
 
     onCreate(options: any) {
         this.setState(new VoxelAcesState());
+
+        // Setup world generation
+        this.generateWorld();
+
         this.setSimulationInterval((deltaTime) => this.update(deltaTime / 1000));
 
         this.onMessage("input", (client, input) => {
@@ -55,7 +61,7 @@ export class VoxelAcesRoom extends Room<VoxelAcesState> {
                 playerState.qy = 0;
                 playerState.qz = 0;
                 playerState.qw = 1;
-                playerState.kills = 0;
+                playerState.kills = playerState.kills; // Keep score on respawn
 
                 serverPlayer.position.set(playerState.x, playerState.y, playerState.z);
                 serverPlayer.quaternion.set(0, 0, 0, 1);
@@ -66,6 +72,56 @@ export class VoxelAcesRoom extends Room<VoxelAcesState> {
             }
         });
     }
+
+    generateWorld() {
+        let seed = WORLD_SEED;
+        const seededRandom = () => {
+            const x = Math.sin(seed++) * 10000;
+            return x - Math.floor(x);
+        };
+
+        // Generate mountains
+        for (let i = 0; i < 20; i++) {
+            const mountainGroupPos = new THREE.Vector3((seededRandom() - 0.5) * 1800, 0, (seededRandom() - 0.5) * 1800);
+            const layers = Math.floor(seededRandom() * 5) + 3;
+            let baseRadius = seededRandom() * 50 + 40;
+            let currentY = GROUND_Y;
+            
+            const mountainGroup = new THREE.Group();
+            mountainGroup.position.copy(mountainGroupPos);
+
+            for (let j = 0; j < layers; j++) {
+                const height = seededRandom() * 30 + 20;
+                const radius = baseRadius * ((layers - j) / layers);
+                
+                const cylinder = new THREE.Mesh(new THREE.CylinderGeometry(radius * 0.7, radius, height, 8));
+                cylinder.position.y = currentY + height / 2;
+                mountainGroup.add(cylinder);
+
+                currentY += height * 0.8;
+            }
+            // Add a single bounding box for the entire mountain group
+            this.collidableObjects.push(new THREE.Box3().setFromObject(mountainGroup));
+        }
+
+        // Generate trees
+        for (let i = 0; i < 50; i++) {
+            const treePos = new THREE.Vector3((seededRandom() - 0.5) * 1800, 0, (seededRandom() - 0.5) * 1800);
+            const treeGroup = new THREE.Group();
+            treeGroup.position.copy(treePos);
+
+            const trunk = new THREE.Mesh(new THREE.CylinderGeometry(1, 1, 10, 6));
+            trunk.position.y = 5 + GROUND_Y;
+            treeGroup.add(trunk);
+
+            const leaves = new THREE.Mesh(new THREE.ConeGeometry(5, 15, 8));
+            leaves.position.y = 15 + GROUND_Y;
+            treeGroup.add(leaves);
+            
+            this.collidableObjects.push(new THREE.Box3().setFromObject(treeGroup));
+        }
+    }
+
 
     onJoin(client: Client, options: any) {
         console.log(client.sessionId, "joined!");
@@ -170,24 +226,32 @@ export class VoxelAcesRoom extends Room<VoxelAcesState> {
             } else {
                 serverPlayer.altitudeTimer = 5;
             }
+
+            // Authoritative Collision Checks
+            const playerHitbox = new THREE.Box3().setFromObject(new THREE.Mesh(new THREE.BoxGeometry(8, 2, 4)));
+            playerHitbox.applyMatrix4(new THREE.Matrix4().compose(serverPlayer.position, serverPlayer.quaternion, new THREE.Vector3(1,1,1)));
+
+            let hasCrashed = false;
+            for (const obstacle of this.collidableObjects) {
+                if (playerHitbox.intersectsBox(obstacle)) {
+                    hasCrashed = true;
+                    break;
+                }
+            }
             
-            if (player.y < GROUND_Y || serverPlayer.boundaryTimer <= 0 || serverPlayer.altitudeTimer <= 0) {
+            if (hasCrashed || player.y < GROUND_Y || serverPlayer.boundaryTimer <= 0 || serverPlayer.altitudeTimer <= 0) {
                 if (player.health > 0) player.health = 0;
             }
         });
 
         // Update bullets and check collisions
-        const playerHitboxes: Map<string, THREE.Box3> = new Map();
+        const playerHitboxes: Map<string, { hitbox: THREE.Box3, player: Player }> = new Map();
         this.state.players.forEach((p, id) => {
             const serverPlayer = this.serverPlayers.get(id);
-            if(serverPlayer) {
-                const hitboxGeo = new THREE.Box3().setFromCenterAndSize(
-                    new THREE.Vector3(0, 0, 0), 
-                    new THREE.Vector3(9, 3, 5) // Hitbox size
-                );
-                const matrix = new THREE.Matrix4().compose(serverPlayer.position, serverPlayer.quaternion, new THREE.Vector3(1,1,1));
-                hitboxGeo.applyMatrix4(matrix);
-                playerHitboxes.set(id, hitboxGeo);
+            if(serverPlayer && p.health > 0) {
+                const hitbox = new THREE.Box3().setFromObject(new THREE.Mesh(new THREE.BoxGeometry(8, 2, 4)));
+                hitbox.applyMatrix4(new THREE.Matrix4().compose(serverPlayer.position, serverPlayer.quaternion, new THREE.Vector3(1,1,1)));
+                playerHitboxes.set(id, { hitbox, player: p });
             }
         });
         
@@ -208,15 +272,14 @@ export class VoxelAcesRoom extends Room<VoxelAcesState> {
             }
 
             // Collision detection
-            for (const [targetId, targetHitbox] of playerHitboxes.entries()) {
+            for (const [targetId, targetData] of playerHitboxes.entries()) {
                 if (targetId === bullet.ownerId) continue;
                 
-                const targetPlayerState = this.state.players.get(targetId);
-                if (targetPlayerState && targetPlayerState.health > 0 && targetHitbox.containsPoint(bullet.position)) {
-                    targetPlayerState.health -= 10;
+                if (targetData.hitbox.containsPoint(bullet.position)) {
+                    targetData.player.health -= 10;
 
-                    if (targetPlayerState.health <= 0) {
-                        targetPlayerState.health = 0;
+                    if (targetData.player.health <= 0) {
+                        targetData.player.health = 0;
                         const shooter = this.state.players.get(bullet.ownerId);
                         if (shooter) {
                             shooter.kills++;

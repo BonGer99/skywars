@@ -12,6 +12,7 @@ import { Loader2, Home } from 'lucide-react';
 import type { VoxelAcesState, Player } from '@/server/rooms/state/VoxelAcesState';
 
 // Constants
+const WORLD_SEED = 12345;
 const BOUNDARY = 950;
 const MAX_ALTITUDE = 220;
 const GROUND_Y = -50;
@@ -21,7 +22,7 @@ const PITCH_SPEED = 1.2;
 const ROLL_SPEED = 1.5;
 const BULLET_SPEED = 200;
 const BULLET_LIFESPAN_MS = 5000;
-const INTERPOLATION_FACTOR = 0.2;
+const INTERPOLATION_FACTOR = 0.1;
 
 const createVoxelPlane = (color: THREE.ColorRepresentation) => {
     const plane = new THREE.Group();
@@ -106,6 +107,7 @@ export default function Game({ mode, playerName: playerNameProp }: GameProps) {
 
         const localPlanes: Record<string, THREE.Group> = {};
         const localBullets: Record<string, THREE.Mesh> = {};
+        const collidableObjects: THREE.Box3[] = [];
 
         // Offline state
         const offlinePlayer = {
@@ -117,6 +119,13 @@ export default function Game({ mode, playerName: playerNameProp }: GameProps) {
         };
         const localOfflineBullets: any[] = [];
         const localOfflineBulletMeshes: Record<string, THREE.Mesh> = {};
+
+        // Seeded random for deterministic world generation
+        let seed = WORLD_SEED;
+        const seededRandom = () => {
+            const x = Math.sin(seed++) * 10000;
+            return x - Math.floor(x);
+        };
 
 
         const init = async () => {
@@ -145,25 +154,95 @@ export default function Game({ mode, playerName: playerNameProp }: GameProps) {
 
             const createMountain = () => {
                 const mountain = new THREE.Group();
-                const layers = Math.floor(Math.random() * 5) + 3;
-                let baseRadius = Math.random() * 50 + 40;
+                const layers = Math.floor(seededRandom() * 5) + 3;
+                let baseRadius = seededRandom() * 50 + 40;
                 let currentY = GROUND_Y;
                 for (let i = 0; i < layers; i++) {
-                    const height = Math.random() * 30 + 20;
+                    const height = seededRandom() * 30 + 20;
                     const radius = baseRadius * ((layers - i) / layers);
+                    const isTopLayer = i === layers - 1;
+                    const matColor = isTopLayer ? 0x228B22 : 0x6A6A6A; // Green top
                     const geo = new THREE.CylinderGeometry(radius * 0.7, radius, height, 8);
-                    const mat = new THREE.MeshLambertMaterial({ color: 0x6A6A6A, flatShading: true });
+                    const mat = new THREE.MeshLambertMaterial({ color: matColor, flatShading: true });
                     const mesh = new THREE.Mesh(geo, mat);
                     mesh.position.y = currentY + height / 2;
                     mountain.add(mesh);
                     currentY += height * 0.8;
                 }
+                const box = new THREE.Box3().setFromObject(mountain);
+                collidableObjects.push(box);
                 return mountain;
             }
+            
+            const createTree = () => {
+                const tree = new THREE.Group();
+                const trunkMat = new THREE.MeshLambertMaterial({ color: 0x8B4513, flatShading: true });
+                const leavesMat = new THREE.MeshLambertMaterial({ color: 0x006400, flatShading: true });
+                
+                const trunkGeo = new THREE.CylinderGeometry(1, 1, 10, 6);
+                const trunk = new THREE.Mesh(trunkGeo, trunkMat);
+                trunk.position.y = 5 + GROUND_Y;
+                tree.add(trunk);
+
+                const leavesGeo = new THREE.ConeGeometry(5, 15, 8);
+                const leaves = new THREE.Mesh(leavesGeo, leavesMat);
+                leaves.position.y = 15 + GROUND_Y;
+                tree.add(leaves);
+                
+                const box = new THREE.Box3().setFromObject(tree);
+                collidableObjects.push(box);
+                return tree;
+            }
+
+            const createLake = () => {
+                const lakeGeo = new THREE.CylinderGeometry(seededRandom() * 40 + 30, seededRandom() * 40 + 30, 0.5, 32);
+                const lakeMat = new THREE.MeshBasicMaterial({ color: 0x4682B4 });
+                const lake = new THREE.Mesh(lakeGeo, lakeMat);
+                lake.position.y = GROUND_Y + 0.26;
+                return lake;
+            }
+
+            const createTank = () => {
+                const tank = new THREE.Group();
+                const mat = new THREE.MeshLambertMaterial({ color: 0x556B2F, flatShading: true });
+
+                const body = new THREE.Mesh(new THREE.BoxGeometry(8, 3, 5), mat);
+                tank.add(body);
+
+                const turret = new THREE.Mesh(new THREE.BoxGeometry(4, 2, 4), mat);
+                turret.position.y = 2.5;
+                tank.add(turret);
+
+                const barrel = new THREE.Mesh(new THREE.CylinderGeometry(0.5, 0.5, 5, 8), mat);
+                barrel.position.set(0, 2.5, -4.5);
+                barrel.rotation.x = Math.PI / 2;
+                tank.add(barrel);
+                
+                tank.position.y = 1.5 + GROUND_Y;
+                return tank;
+            }
+            
+            // Regenerate world with seed
+            seed = WORLD_SEED; 
             for (let i = 0; i < 20; i++) {
                 const mountain = createMountain();
-                mountain.position.set((Math.random() - 0.5) * 1800, 0, (Math.random() - 0.5) * 1800);
+                mountain.position.set((seededRandom() - 0.5) * 1800, 0, (seededRandom() - 0.5) * 1800);
                 scene.add(mountain);
+            }
+            for (let i = 0; i < 50; i++) {
+                const tree = createTree();
+                tree.position.set((seededRandom() - 0.5) * 1800, 0, (seededRandom() - 0.5) * 1800);
+                scene.add(tree);
+            }
+            for (let i = 0; i < 15; i++) {
+                const lake = createLake();
+                lake.position.set((seededRandom() - 0.5) * 1800, 0, (seededRandom() - 0.5) * 1800);
+                scene.add(lake);
+            }
+            for (let i = 0; i < 10; i++) {
+                const tank = createTank();
+                tank.position.set((seededRandom() - 0.5) * 1800, 0, (seededRandom() - 0.5) * 1800);
+                scene.add(tank);
             }
 
             const createCloud = () => {
@@ -228,15 +307,14 @@ export default function Game({ mode, playerName: playerNameProp }: GameProps) {
                         scene.add(planeMesh);
 
                         if(isMe) {
-                            player.listen("health", (currentValue) => setPlayerHealth(currentValue));
-                            player.listen("kills", (currentValue) => setScore(currentValue));
-                            player.listen("gunOverheat", (currentValue) => setGunOverheat(currentValue));
-
                             player.listen("health", (currentValue) => {
+                                setPlayerHealth(currentValue)
                                 if (currentValue <= 0 && gameStatusRef.current === 'playing') {
                                     setGameStatus('gameover');
                                 }
                             });
+                            player.listen("kills", (currentValue) => setScore(currentValue));
+                            player.listen("gunOverheat", (currentValue) => setGunOverheat(currentValue));
                         }
                     });
                     
@@ -375,12 +453,23 @@ export default function Game({ mode, playerName: playerNameProp }: GameProps) {
                         }
                     }
                     
-                    if ( myPlane && (myPlane.position.y < GROUND_Y || boundaryWarningTimerRef.current <= 0 || altitudeWarningTimerRef.current <= 0) ) {
-                         if (offlinePlayer.health > 0) {
-                            offlinePlayer.health = 0;
-                            setPlayerHealth(0);
-                            setGameStatus('gameover');
-                         }
+                    if (myPlane) {
+                        let hasCrashed = false;
+                        const playerHitbox = new THREE.Box3().setFromObject(myPlane);
+                        for (const obstacle of collidableObjects) {
+                            if (playerHitbox.intersectsBox(obstacle)) {
+                                hasCrashed = true;
+                                break;
+                            }
+                        }
+
+                        if (hasCrashed || myPlane.position.y < GROUND_Y || boundaryWarningTimerRef.current <= 0 || altitudeWarningTimerRef.current <= 0) {
+                            if (offlinePlayer.health > 0) {
+                                offlinePlayer.health = 0;
+                                setPlayerHealth(0);
+                                setGameStatus('gameover');
+                            }
+                        }
                     }
                 }
 
@@ -396,7 +485,6 @@ export default function Game({ mode, playerName: playerNameProp }: GameProps) {
                             const newPos = new THREE.Vector3(player.x, player.y, player.z);
                             const newQuat = new THREE.Quaternion(player.qx, player.qy, player.qz, player.qw);
                             
-                            // Interpolate all players to smooth their movement.
                             planeMesh.position.lerp(newPos, INTERPOLATION_FACTOR);
                             planeMesh.quaternion.slerp(newQuat, INTERPOLATION_FACTOR);
                         }
@@ -498,7 +586,8 @@ export default function Game({ mode, playerName: playerNameProp }: GameProps) {
                 boundaryWarningTimerRef.current = 7;
             }
         } else {
-            router.push('/play');
+            // This is a bit of a hack to force a re-render and re-init of the game
+            router.push('/play?t=' + new Date().getTime());
         }
     }, [mode, router]);
 
