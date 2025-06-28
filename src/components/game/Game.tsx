@@ -8,7 +8,7 @@ import { useRouter } from 'next/navigation';
 import HUD from '@/components/ui/HUD';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { Loader2, Home, LocateFixed, FastForward } from 'lucide-react';
+import { Loader2, Home, LocateFixed } from 'lucide-react';
 import type { VoxelAcesState, Player } from '@/server/rooms/state/VoxelAcesState';
 import { useSettings } from '@/context/SettingsContext';
 import { useIsMobile } from '@/hooks/use-is-mobile';
@@ -142,11 +142,8 @@ const OnScreenControls = ({ keysPressed }: { keysPressed: React.MutableRefObject
 
             {/* Action Controls (Bottom Right) */}
             <div className="absolute bottom-8 right-8 flex flex-col gap-4 items-center pointer-events-auto z-40">
-                 <button onTouchStart={handleActionTouch('shift', true)} onTouchEnd={handleActionTouch('shift', false)} className="bg-blue-600/60 rounded-full w-20 h-20 flex items-center justify-center backdrop-blur-sm active:bg-blue-600/80">
-                    <FastForward size={32} />
-                 </button>
-                <button onTouchStart={handleActionTouch('mouse0', true)} onTouchEnd={handleActionTouch('mouse0', false)} className="bg-red-600/60 rounded-full w-24 h-24 flex items-center justify-center backdrop-blur-sm active:bg-red-600/80">
-                     <LocateFixed size={40} />
+                <button onTouchStart={handleActionTouch('mouse0', true)} onTouchEnd={handleActionTouch('mouse0', false)} className="bg-red-600/60 rounded-full w-20 h-20 flex items-center justify-center backdrop-blur-sm active:bg-red-600/80">
+                     <LocateFixed size={32} />
                 </button>
             </div>
         </div>
@@ -687,10 +684,10 @@ export default function Game({ mode, playerName: playerNameProp }: GameProps) {
 
 
     return (
-        <div className="relative w-screen h-screen bg-background overflow-hidden" onContextMenu={(e) => e.preventDefault()}>
+        <div className="relative w-screen h-screen bg-background overflow-hidden touch-none" onContextMenu={(e) => e.preventDefault()}>
             <div ref={mountRef} className="absolute top-0 left-0 w-full h-full" />
             
-            {onScreenControls && isMobile && _gameStatus === 'playing' && <OnScreenControls keysPressed={keysPressed.current} />}
+            {onScreenControls && isMobile && _gameStatus === 'playing' && <OnScreenControls keysPressed={keysPressed} />}
 
             <div 
                 className="absolute inset-0 bg-white z-10 pointer-events-none"
