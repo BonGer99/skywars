@@ -13,7 +13,7 @@ import { AlertDialog, AlertDialogTrigger, AlertDialogContent, AlertDialogHeader,
 import { Input } from '@/components/ui/input';
 import { useToast } from "@/hooks/use-toast";
 import { db } from '@/lib/firebase';
-import { doc, onSnapshot, collection, addDoc, serverTimestamp, deleteDoc, updateDoc } from 'firebase/firestore';
+import { doc, onSnapshot, collection, addDoc, serverTimestamp, deleteDoc, updateDoc, writeBatch } from 'firebase/firestore';
 
 
 type GameState = 'loading' | 'menu' | 'playing' | 'gameover';
@@ -109,19 +109,12 @@ export default function Game({ mode, serverId: serverIdProp, playerName: playerN
     const lastUpdateTimeRef = useRef(0);
 
     // Sync state to ref for use in game loop
-    useEffect(() => {
-        gameStateRef.current = gameState;
-    }, [gameState]);
-
-    useEffect(() => {
-        waveRef.current = wave;
-    }, [wave]);
+    useEffect(() => { gameStateRef.current = gameState; }, [gameState]);
+    useEffect(() => { waveRef.current = wave; }, [wave]);
+    useEffect(() => { altitudeWarningTimerRef.current = altitudeWarningTimer; }, [altitudeWarningTimer]);
+    useEffect(() => { boundaryWarningTimerRef.current = boundaryWarningTimer; }, [boundaryWarningTimer]);
     
-    // ---- GAME ACTIONS ----
-
-    const handleLeaveGame = useCallback(() => {
-        router.push('/');
-    }, [router]);
+    const handleLeaveGame = useCallback(() => { router.push('/'); }, [router]);
 
     const copyInviteLink = () => {
         if (serverIdProp) {
@@ -134,7 +127,7 @@ export default function Game({ mode, serverId: serverIdProp, playerName: playerN
         }
     };
 
-    const resetGame = useCallback((isFirstLoad = false) => {
+    const resetGame = useCallback(() => {
         if (!playerRef.current || !sceneRef.current) return;
         
         playerRef.current.position.set(0, 50, 0);
@@ -153,13 +146,11 @@ export default function Game({ mode, serverId: serverIdProp, playerName: playerN
 
         setPlayerHealth(100);
         setGunOverheat(0);
-        setAltitude(playerRef.current.position.y - (-50));
+        setAltitude(playerRef.current.position.y - (-50)); // Ground is at -50
         setShowAltitudeWarning(false);
         setAltitudeWarningTimer(5);
-        altitudeWarningTimerRef.current = 5;
         setShowBoundaryWarning(false);
         setBoundaryWarningTimer(7);
-        boundaryWarningTimerRef.current = 7;
         setWhiteoutOpacity(0);
     }, [mode]);
 
@@ -183,13 +174,6 @@ export default function Game({ mode, serverId: serverIdProp, playerName: playerN
                 if (playerRef.current) {
                     playerRef.current.position.set(randomPos.x, randomPos.y, randomPos.z);
                     playerRef.current.quaternion.set(0,0,0,1);
-                }
-
-                if (playerRef.current && cameraRef.current) {
-                    const idealOffset = cameraOffsetRef.current.clone().applyQuaternion(playerRef.current.quaternion);
-                    const idealPosition = playerRef.current.position.clone().add(idealOffset);
-                    cameraRef.current.position.copy(idealPosition);
-                    cameraRef.current.lookAt(playerRef.current.position);
                 }
                 
                 setGameState('playing');
@@ -255,8 +239,7 @@ export default function Game({ mode, serverId: serverIdProp, playerName: playerN
                 isTree ? new THREE.ConeGeometry(3, 10, 6) : new THREE.SphereGeometry(2, 6, 6),
                 new THREE.MeshLambertMaterial({ color: isTree ? 0x228B22 : 0x8B4513, flatShading: true })
             );
-            mesh.position.set((Math.random() - 0.5) * 1800, isTree ? 5 : 2, (Math.random() - 0.5) * 1800);
-            if (isTree) mesh.position.y = -45; else mesh.position.y = -48;
+            mesh.position.set((Math.random() - 0.5) * 1800, isTree ? -45 : -48, (Math.random() - 0.5) * 1800);
             scenery.add(mesh);
         }
         scene.add(scenery);
@@ -275,6 +258,8 @@ export default function Game({ mode, serverId: serverIdProp, playerName: playerN
         const keysPressed: Record<string, boolean> = {};
         let gunCooldown = 0;
         let lastTime = 0;
+        const BOUNDARY = 950;
+        const MAX_ALTITUDE = 220;
         
         const gameLoop = (time: number) => {
             if (!isMounted) return;
@@ -282,7 +267,6 @@ export default function Game({ mode, serverId: serverIdProp, playerName: playerN
             const delta = lastTime > 0 ? (time - lastTime) / 1000 : 1/60;
             lastTime = time;
 
-            // Only run game logic when playing
             if (gameStateRef.current === 'playing' && playerRef.current) {
                 const PITCH_SPEED = 1.2;
                 const ROLL_SPEED = 1.8;
@@ -293,14 +277,9 @@ export default function Game({ mode, serverId: serverIdProp, playerName: playerN
                 // Player Controls
                 if (keysPressed['w'] || keysPressed['W']) playerRef.current.rotateX(-PITCH_SPEED * delta);
                 if (keysPressed['s'] || keysPressed['S']) playerRef.current.rotateX(PITCH_SPEED * delta);
-                if (keysPressed['a'] || keysPressed['A']) {
-                    playerRef.current.rotateZ(ROLL_SPEED * delta);
-                    playerRef.current.rotateY(YAW_SPEED * delta);
-                }
-                if (keysPressed['d'] || keysPressed['D']) {
-                    playerRef.current.rotateZ(-ROLL_SPEED * delta);
-                    playerRef.current.rotateY(-YAW_SPEED * delta);
-                }
+                if (keysPressed['a'] || keysPressed['A']) { playerRef.current.rotateZ(ROLL_SPEED * delta); playerRef.current.rotateY(YAW_SPEED * delta * 0.2); }
+                if (keysPressed['d'] || keysPressed['D']) { playerRef.current.rotateZ(-ROLL_SPEED * delta); playerRef.current.rotateY(-YAW_SPEED * delta * 0.2); }
+                
                 let currentSpeed = BASE_SPEED;
                 if (keysPressed['shift']) currentSpeed *= BOOST_MULTIPLIER;
                 const forward = new THREE.Vector3(0, 0, -1).applyQuaternion(playerRef.current.quaternion);
@@ -328,6 +307,35 @@ export default function Game({ mode, serverId: serverIdProp, playerName: playerN
                     setPlayerHealth(0); 
                     if (gameStateRef.current === 'playing') setGameState('gameover');
                 }
+                
+                // Altitude Warning
+                if (currentAltitude > MAX_ALTITUDE) {
+                    setShowAltitudeWarning(true);
+                    setAltitudeWarningTimer(t => Math.max(0, t - delta));
+                    const opacity = Math.max(0, 1 - (altitudeWarningTimerRef.current / 5));
+                    setWhiteoutOpacity(opacity);
+                    if (altitudeWarningTimerRef.current <= 0) {
+                         setPlayerHealth(0); 
+                         if (gameStateRef.current === 'playing') setGameState('gameover');
+                    }
+                } else {
+                    setShowAltitudeWarning(false);
+                    setAltitudeWarningTimer(5);
+                    setWhiteoutOpacity(0);
+                }
+
+                // Boundary Warning
+                if (Math.abs(playerRef.current.position.x) > BOUNDARY || Math.abs(playerRef.current.position.z) > BOUNDARY) {
+                    setShowBoundaryWarning(true);
+                    setBoundaryWarningTimer(t => Math.max(0, t - delta));
+                     if (boundaryWarningTimerRef.current <= 0) {
+                        setPlayerHealth(0);
+                        if (gameStateRef.current === 'playing') setGameState('gameover');
+                    }
+                } else {
+                    setShowBoundaryWarning(false);
+                    setBoundaryWarningTimer(7);
+                }
 
                 // Shooting logic
                 gunCooldown = Math.max(0, gunCooldown - delta);
@@ -344,12 +352,12 @@ export default function Game({ mode, serverId: serverIdProp, playerName: playerN
                          
                          const bulletId = Math.random().toString(36).substring(2, 15);
                          
-                         // Create local bullet
                          const bulletGeo = new THREE.BoxGeometry(0.2, 0.2, 1);
                          const bulletMat = new THREE.MeshBasicMaterial({ color: 0xffff00 });
                          const bulletMesh = new THREE.Mesh(bulletGeo, bulletMat);
                          bulletMesh.position.copy(bulletPos);
                          bulletMesh.quaternion.copy(bulletQuat);
+                         scene.add(bulletMesh);
 
                          bulletsRef.current.push({
                             id: bulletId,
@@ -358,7 +366,6 @@ export default function Game({ mode, serverId: serverIdProp, playerName: playerN
                             ownerId: playerIdRef.current,
                             spawnTime: performance.now(),
                          });
-                         scene.add(bulletMesh);
 
                          if(mode === 'online' && serverIdProp) {
                             addDoc(collection(db, 'servers', serverIdProp, 'bullets'), {
@@ -376,8 +383,6 @@ export default function Game({ mode, serverId: serverIdProp, playerName: playerN
             for (let i = bulletsRef.current.length - 1; i >= 0; i--) {
                 const bullet = bulletsRef.current[i];
                 bullet.mesh.position.add(bullet.velocity.clone().multiplyScalar(delta));
-
-                // Despawn bullets after some time
                 if (performance.now() - bullet.spawnTime > 5000) {
                     scene.remove(bullet.mesh);
                     bulletsRef.current.splice(i, 1);
@@ -408,8 +413,8 @@ export default function Game({ mode, serverId: serverIdProp, playerName: playerN
         
         // ---- 3. Asynchronous Game Initialization ----
         const initializeGame = async () => {
-            if (!isMounted || !playerRef.current || !cameraRef.current) return;
-            resetGame(true);
+            if (!isMounted) return;
+            resetGame();
 
             if (mode === 'offline') {
                 setGameState('menu');
@@ -428,13 +433,17 @@ export default function Game({ mode, serverId: serverIdProp, playerName: playerN
                     });
                     
                     playerIdRef.current = playerDocRef.id;
-                    playerRef.current.position.set(randomPos.x, randomPos.y, randomPos.z);
-                    playerRef.current.quaternion.set(0, 0, 0, 1);
+                    if (playerRef.current) {
+                        playerRef.current.position.set(randomPos.x, randomPos.y, randomPos.z);
+                        playerRef.current.quaternion.set(0, 0, 0, 1);
+                    }
                     
-                    const idealOffset = cameraOffsetRef.current.clone().applyQuaternion(playerRef.current.quaternion);
-                    const idealPosition = playerRef.current.position.clone().add(idealOffset);
-                    cameraRef.current.position.copy(idealPosition);
-                    cameraRef.current.lookAt(playerRef.current.position);
+                    if (cameraRef.current && playerRef.current) {
+                        const idealOffset = cameraOffsetRef.current.clone().applyQuaternion(playerRef.current.quaternion);
+                        const idealPosition = playerRef.current.position.clone().add(idealOffset);
+                        cameraRef.current.position.copy(idealPosition);
+                        cameraRef.current.lookAt(playerRef.current.position);
+                    }
 
                     if (isMounted) {
                         setGameState('playing');
@@ -463,8 +472,7 @@ export default function Game({ mode, serverId: serverIdProp, playerName: playerN
             
             const pid = playerIdRef.current;
             if (mode === 'online' && serverIdProp && pid) {
-                const playerDocRef = doc(db, 'servers', serverIdProp, 'players', pid);
-                deleteDoc(playerDocRef).catch(e => {
+                deleteDoc(doc(db, 'servers', serverIdProp, 'players', pid)).catch(e => {
                   console.warn("Could not delete player document on exit:", e.message);
                 });
             }
@@ -472,33 +480,22 @@ export default function Game({ mode, serverId: serverIdProp, playerName: playerN
             if(mountRef.current && renderer.domElement) {
                 mountRef.current.removeChild(renderer.domElement);
             }
-            renderer.dispose();
-            scene.traverse(object => {
-                if (object instanceof THREE.Mesh) {
-                    if (object.geometry) object.geometry.dispose();
-                    if (object.material) {
-                        if (Array.isArray(object.material)) {
-                            object.material.forEach(material => material.dispose());
-                        } else {
-                            object.material.dispose();
-                        }
-                    }
-                }
-            });
-            scene.clear();
         };
-    }, []); // <-- EMPTY DEPENDENCIES: This effect runs ONCE on mount.
+    }, []);
 
     // ---- FIRESTORE LISTENERS ----
     useEffect(() => {
-        if (mode !== 'online' || !serverIdProp || !playerIdRef.current) return;
+        if (mode !== 'online' || !serverIdProp) return;
 
-        const heartbeatInterval = setInterval(() => {
-            if (playerIdRef.current) {
-                const playerDocRef = doc(db, 'servers', serverIdProp, 'players', playerIdRef.current);
-                updateDoc(playerDocRef, { lastSeen: serverTimestamp() }).catch(console.error);
-            }
-        }, 10000); // Heartbeat every 10 seconds
+        let heartbeatInterval: NodeJS.Timeout;
+        if (playerIdRef.current) {
+            heartbeatInterval = setInterval(() => {
+                if (playerIdRef.current) {
+                    const playerDocRef = doc(db, 'servers', serverIdProp, 'players', playerIdRef.current);
+                    updateDoc(playerDocRef, { lastSeen: serverTimestamp() }).catch(console.error);
+                }
+            }, 10000);
+        }
 
         const playersCollectionRef = collection(db, 'servers', serverIdProp, 'players');
         const unsubPlayers = onSnapshot(playersCollectionRef, (snapshot) => {
@@ -506,8 +503,8 @@ export default function Game({ mode, serverId: serverIdProp, playerName: playerN
             const scene = sceneRef.current;
             const myId = playerIdRef.current;
             const now = Date.now();
-            const STALE_THRESHOLD_MS = 15000; // 15 seconds
-
+            const STALE_THRESHOLD_MS = 15000; 
+            
             const currentPlayersOnScreen = { ...otherPlayersRef.current };
             const freshPlayerIds = new Set<string>();
 
@@ -516,7 +513,6 @@ export default function Game({ mode, serverId: serverIdProp, playerName: playerN
                 const id = docSnap.id;
 
                 if (id === myId) {
-                    // This is me, handle my own data updates (e.g., health change from server)
                     if (playerHealth !== data.health) setPlayerHealth(data.health);
                     if (data.health <= 0 && gameStateRef.current === 'playing') setGameState('gameover');
                     if (score !== data.kills) setScore(data.kills);
@@ -524,28 +520,23 @@ export default function Game({ mode, serverId: serverIdProp, playerName: playerN
                 };
 
                 const lastSeenTimestamp = data.lastSeen?.toDate()?.getTime();
-                if (!lastSeenTimestamp || (now - lastSeenTimestamp) > STALE_THRESHOLD_MS) {
-                    // Stale player, skip them. They'll be removed below.
-                } else {
+                if (lastSeenTimestamp && (now - lastSeenTimestamp < STALE_THRESHOLD_MS)) {
                     freshPlayerIds.add(id);
                     let otherPlayer = currentPlayersOnScreen[id];
 
                     if (!otherPlayer) {
-                        // Player is new or has come back online
                         const newPlayerPlane = createVoxelPlane(new THREE.Color(0xffaa00));
                         scene.add(newPlayerPlane);
                         otherPlayersRef.current[id] = { mesh: newPlayerPlane, name: data.name || 'Unknown', health: data.health || 100 };
                         otherPlayer = otherPlayersRef.current[id];
                     }
 
-                    // Update position and rotation for the fresh player
                     if (data.position) otherPlayer.mesh.position.lerp(new THREE.Vector3(data.position.x, data.position.y, data.position.z), 0.3);
                     if (data.quaternion) otherPlayer.mesh.quaternion.slerp(new THREE.Quaternion(data.quaternion.x, data.quaternion.y, data.quaternion.z, data.quaternion.w), 0.3);
                     otherPlayer.health = data.health;
                 }
             });
             
-            // Garbage collect: Remove players from the scene who are no longer in the fresh list
             for (const id in currentPlayersOnScreen) {
                 if (!freshPlayerIds.has(id)) {
                     scene.remove(currentPlayersOnScreen[id].mesh);
@@ -553,20 +544,12 @@ export default function Game({ mode, serverId: serverIdProp, playerName: playerN
                 }
             }
         });
-
-        return () => {
-            clearInterval(heartbeatInterval);
-            unsubPlayers();
-        };
-    }, [mode, serverIdProp, playerHealth, score]);
-
-
-    useEffect(() => {
-        if (mode !== 'online' || !serverIdProp) return;
-        const q = collection(db, 'servers', serverIdProp, 'bullets');
-        const unsubBullets = onSnapshot(q, (snapshot) => {
+        
+        const bulletsCollectionRef = collection(db, 'servers', serverIdProp, 'bullets');
+        const unsubBullets = onSnapshot(bulletsCollectionRef, (snapshot) => {
              if (!sceneRef.current || !playerRef.current) return;
              const myId = playerIdRef.current;
+             const batch = writeBatch(db);
              snapshot.docChanges().forEach(change => {
                 if (change.type === 'added') {
                     const bulletData = change.doc.data();
@@ -590,15 +573,20 @@ export default function Game({ mode, serverId: serverIdProp, playerName: playerN
                     });
                     sceneRef.current?.add(bulletMesh);
                     
-                    // Cleanup bullet document after a delay
-                    setTimeout(() => {
-                        deleteDoc(doc(db, 'servers', serverIdProp, 'bullets', docId)).catch(console.error);
-                    }, 5000)
+                    batch.delete(doc(db, 'servers', serverIdProp, 'bullets', docId));
                 }
              });
+             if (!snapshot.empty) {
+                batch.commit().catch(console.error);
+             }
         });
-        return () => unsubBullets();
-    }, [mode, serverIdProp]);
+
+        return () => {
+            if (heartbeatInterval) clearInterval(heartbeatInterval);
+            unsubPlayers();
+            unsubBullets();
+        };
+    }, [mode, serverIdProp, playerHealth, score]);
 
     const inviteLink = serverIdProp ? `${typeof window !== 'undefined' ? window.location.origin : ''}/online` : '';
 
@@ -668,7 +656,7 @@ export default function Game({ mode, serverId: serverIdProp, playerName: playerN
                     <Card className="bg-destructive/80 text-destructive-foreground p-4 border-2 border-destructive-foreground">
                         <CardTitle className="text-3xl font-bold">WARNING: ALTITUDE CRITICAL</CardTitle>
                         <CardContent className="p-2 pt-2">
-                            <p className="text-lg">Descend below 220m immediately!</p>
+                            <p className="text-lg">Descend below {MAX_ALTITUDE}m immediately!</p>
                             <p className="text-5xl font-mono font-bold mt-2">
                                 {altitudeWarningTimer.toFixed(1)}
                             </p>
@@ -717,3 +705,5 @@ export default function Game({ mode, serverId: serverIdProp, playerName: playerN
         </div>
     );
 }
+
+    
