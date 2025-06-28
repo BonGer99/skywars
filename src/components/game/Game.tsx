@@ -20,8 +20,8 @@ const MAX_ALTITUDE = 220;
 const GROUND_Y = -50;
 const BASE_SPEED = 60;
 const BOOST_MULTIPLIER = 2.0;
-const PITCH_SPEED = 1.2;
-const ROLL_SPEED = 1.5;
+const PITCH_SPEED = 2.5;
+const ROLL_SPEED = 2.5;
 const BULLET_SPEED = 200;
 const BULLET_LIFESPAN_MS = 5000;
 const INTERPOLATION_FACTOR = 0.15;
@@ -212,6 +212,18 @@ export default function Game({ mode, playerName: playerNameProp }: GameProps) {
         }
     }, [mode, router]);
 
+    // Helper to create a smaller, scaled hitbox for terrain
+    const createScaledBox = (mesh: THREE.Mesh, scale: number): THREE.Box3 => {
+        const box = new THREE.Box3().setFromObject(mesh);
+        const center = new THREE.Vector3();
+        box.getCenter(center);
+        const size = new THREE.Vector3();
+        box.getSize(size);
+        size.multiplyScalar(scale);
+        box.setFromCenterAndSize(center, size);
+        return box;
+    };
+
 
     useEffect(() => {
         if (typeof window === 'undefined' || !mountRef.current) return;
@@ -294,7 +306,7 @@ export default function Game({ mode, playerName: playerNameProp }: GameProps) {
                     const mesh = new THREE.Mesh(geo, mat);
                     mesh.position.set(mountainPosX, currentY + height / 2, mountainPosZ);
                     scene.add(mesh);
-                    collidableObjects.push(new THREE.Box3().setFromObject(mesh));
+                    collidableObjects.push(createScaledBox(mesh, 0.8));
                     currentY += height * 0.8;
                 }
             }
@@ -309,13 +321,13 @@ export default function Game({ mode, playerName: playerNameProp }: GameProps) {
                 const trunk = new THREE.Mesh(trunkGeo, trunkMat);
                 trunk.position.set(treeX, GROUND_Y + 5, treeZ);
                 scene.add(trunk);
-                collidableObjects.push(new THREE.Box3().setFromObject(trunk));
+                collidableObjects.push(createScaledBox(trunk, 0.8));
 
                 const leavesGeo = new THREE.ConeGeometry(5, 15, 8);
                 const leaves = new THREE.Mesh(leavesGeo, leavesMat);
                 leaves.position.set(treeX, GROUND_Y + 15, treeZ);
                 scene.add(leaves);
-                collidableObjects.push(new THREE.Box3().setFromObject(leaves));
+                collidableObjects.push(createScaledBox(leaves, 0.8));
             }
             // Generate lakes
             for (let i = 0; i < 15; i++) {
@@ -701,14 +713,6 @@ export default function Game({ mode, playerName: playerNameProp }: GameProps) {
                 </div>
             )}
             
-            {_gameStatus === 'playing' && (
-                 <div className="absolute top-4 right-4 z-20">
-                    <Button onClick={handleLeaveGame} variant="outline" size="icon" className="h-10 w-10 rounded-full bg-black/30 text-white border-primary/50 backdrop-blur-sm hover:bg-destructive/50">
-                        <Home className="h-5 w-5"/>
-                        <span className="sr-only">Home</span>
-                    </Button>
-                </div>
-            )}
 
             {_gameStatus === 'menu' && mode === 'offline' && (
                  <div className="absolute inset-0 flex items-center justify-center z-10">
@@ -747,7 +751,7 @@ export default function Game({ mode, playerName: playerNameProp }: GameProps) {
             )}
             
             {_gameStatus === 'playing' ? (
-                 <HUD score={score} wave={wave} health={playerHealth} overheat={gunOverheat} altitude={altitude} mode={mode} players={roomRef.current?.state.players} />
+                 <HUD score={score} wave={wave} health={playerHealth} overheat={gunOverheat} altitude={altitude} mode={mode} players={roomRef.current?.state.players} onLeaveGame={handleLeaveGame} />
             ) : null}
 
             {_gameStatus === 'gameover' && (

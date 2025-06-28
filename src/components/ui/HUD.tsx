@@ -1,12 +1,8 @@
 
-import { Card, CardContent } from '@/components/ui/card';
-import { Progress } from '@/components/ui/progress';
-import ServerLeaderboard from './ServerLeaderboard';
+import { Button } from '@/components/ui/button';
 import type { MapSchema } from '@colyseus/schema';
 import type { Player } from '@/server/rooms/state/VoxelAcesState';
-import { useIsMobile } from '@/hooks/use-is-mobile';
-import { Plus, Flame, ArrowUp, Star, Users } from 'lucide-react';
-
+import { Plus, Flame, ArrowUp, Star, Users, Home } from 'lucide-react';
 
 interface HUDProps {
   score: number;
@@ -16,84 +12,52 @@ interface HUDProps {
   altitude: number;
   mode: 'offline' | 'online';
   players?: MapSchema<Player>;
+  onLeaveGame: () => void;
 }
 
-export default function HUD({ score, wave, health, overheat, altitude, mode, players }: HUDProps) {
-  const isMobile = useIsMobile();
-
-  if (isMobile) {
-    return (
-      <div className="absolute top-0 left-0 right-0 p-2 text-white font-headline pointer-events-none select-none bg-black/20 backdrop-blur-sm z-10">
-        <div className="flex justify-between items-center text-sm">
-          {/* Left Stats */}
-          <div className="flex items-center gap-3">
-            <div className="flex items-center gap-1">
-              <Plus className="h-4 w-4 text-green-400" />
-              <span>{health}</span>
-            </div>
-            <div className="flex items-center gap-1">
-              <Flame className="h-4 w-4 text-orange-400" />
-              <span>{Math.round(overheat)}</span>
-            </div>
-            <div className="flex items-center gap-1">
-              <ArrowUp className="h-4 w-4" />
-              <span>{Math.round(altitude)}m</span>
-            </div>
+export default function HUD({ score, wave, health, overheat, altitude, mode, players, onLeaveGame }: HUDProps) {
+  return (
+    <div className="absolute top-0 left-0 right-0 p-2 text-white font-headline pointer-events-none select-none bg-black/20 backdrop-blur-sm z-10">
+      <div className="flex justify-between items-center">
+        {/* Left Stats */}
+        <div className="flex items-center gap-x-4 text-lg">
+          <div className="flex items-center gap-1.5" title="Health">
+            <Plus className="h-5 w-5 text-green-400" />
+            <span>{health}</span>
           </div>
+          <div className="flex items-center gap-1.5" title="Gun Overheat">
+            <Flame className="h-5 w-5 text-orange-400" />
+            <span>{Math.round(overheat)}</span>
+          </div>
+          <div className="flex items-center gap-1.5" title="Altitude">
+            <ArrowUp className="h-5 w-5" />
+            <span>{Math.round(altitude)}m</span>
+          </div>
+        </div>
 
-          {/* Right Stats */}
-          <div className="flex items-center gap-3">
-            <div className="flex items-center gap-1">
-              <Star className="h-4 w-4 text-yellow-400" />
+        {/* Right Stats & Actions */}
+        <div className="flex items-center gap-x-4 text-lg">
+            <div className="flex items-center gap-1.5" title="Kills">
+              <Star className="h-5 w-5 text-yellow-400" />
               <span>{score}</span>
             </div>
             {mode === 'online' ? (
-                <div className="flex items-center gap-1">
-                    <Users className="h-4 w-4" />
+                <div className="flex items-center gap-1.5" title="Players">
+                    <Users className="h-5 w-5" />
                     <span>{players?.size || 1}</span>
                 </div>
             ) : (
-                <div className="flex items-center gap-1">
-                    <Users className="h-4 w-4" />
-                    <span>WAVE: {wave}</span>
+                <div className="flex items-center gap-1.5" title="Wave">
+                    <Users className="h-5 w-5" />
+                    <span className="hidden sm:inline">WAVE:</span> 
+                    <span>{wave}</span>
                 </div>
             )}
-           </div>
+            <Button onClick={onLeaveGame} variant="outline" size="icon" className="h-10 w-10 rounded-full bg-black/30 text-white border-primary/50 backdrop-blur-sm hover:bg-destructive/50 pointer-events-auto">
+                <Home className="h-5 w-5"/>
+                <span className="sr-only">Home</span>
+            </Button>
         </div>
-      </div>
-    );
-  }
-
-  return (
-    <div className="absolute top-4 left-4 right-4 text-white font-headline pointer-events-none select-none">
-      <div className="flex justify-between items-start">
-        <Card className="w-52 sm:w-64 bg-black/30 backdrop-blur-sm border-primary/50 text-primary-foreground p-2">
-          <CardContent className="p-2 space-y-2">
-            <div>
-              <label className="text-sm font-medium">HEALTH</label>
-              <Progress value={health} className="h-4 bg-red-900/50" indicatorClassName="bg-green-500" />
-            </div>
-            <div>
-              <label className="text-sm font-medium">GUN HEAT</label>
-              <Progress value={overheat} className="h-4 bg-gray-600/50" indicatorClassName="bg-accent" />
-            </div>
-            <div>
-              <label className="text-sm font-medium">ALTITUDE</label>
-              <div className="text-xl font-bold">{Math.round(altitude)}m</div>
-            </div>
-          </CardContent>
-        </Card>
-
-        {mode === 'online' && players ? (
-          <ServerLeaderboard players={players} />
-        ) : (
-          <Card className="text-right bg-black/30 backdrop-blur-sm border-primary/50 text-primary-foreground p-2">
-            <CardContent className="p-2 min-w-[140px] sm:min-w-[160px]">
-              <div className="text-xl sm:text-2xl font-bold">SCORE: {score}</div>
-              <div className="text-base sm:text-lg">WAVE: {wave}</div>
-            </CardContent>
-          </Card>
-        )}
       </div>
     </div>
   );

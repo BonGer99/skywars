@@ -7,8 +7,8 @@ import * as THREE from 'three';
 const WORLD_SEED = 12345;
 const BASE_SPEED = 60;
 const BOOST_MULTIPLIER = 2.0;
-const PITCH_SPEED = 1.2; 
-const ROLL_SPEED = 1.5;
+const PITCH_SPEED = 2.5; 
+const ROLL_SPEED = 2.5;
 const MAX_ALTITUDE = 220;
 const BOUNDARY = 950;
 const GROUND_Y = -50;
@@ -36,6 +36,18 @@ export class VoxelAcesRoom extends Room<VoxelAcesState> {
     serverPlayers: Map<string, ServerPlayerData> = new Map();
     serverBullets: Map<string, { position: THREE.Vector3, velocity: THREE.Vector3, spawnTime: number, ownerId: string }> = new Map();
     collidableObjects: THREE.Box3[] = [];
+
+    // Helper to create a smaller, scaled hitbox for terrain
+    createScaledBox(mesh: THREE.Mesh, scale: number): THREE.Box3 {
+        const box = new THREE.Box3().setFromObject(mesh);
+        const center = new THREE.Vector3();
+        box.getCenter(center);
+        const size = new THREE.Vector3();
+        box.getSize(size);
+        size.multiplyScalar(scale);
+        box.setFromCenterAndSize(center, size);
+        return box;
+    };
 
     onCreate(options: any) {
         this.setState(new VoxelAcesState());
@@ -104,7 +116,7 @@ export class VoxelAcesRoom extends Room<VoxelAcesState> {
                 mesh.position.set(mountainPosX, currentY + height / 2, mountainPosZ);
                 mesh.updateMatrixWorld();
                 
-                this.collidableObjects.push(new THREE.Box3().setFromObject(mesh));
+                this.collidableObjects.push(this.createScaledBox(mesh, 0.8));
                 currentY += height * 0.8;
             }
         }
@@ -118,13 +130,13 @@ export class VoxelAcesRoom extends Room<VoxelAcesState> {
             const trunkMesh = new THREE.Mesh(trunkGeo);
             trunkMesh.position.set(treeX, GROUND_Y + 5, treeZ);
             trunkMesh.updateMatrixWorld();
-            this.collidableObjects.push(new THREE.Box3().setFromObject(trunkMesh));
+            this.collidableObjects.push(this.createScaledBox(trunkMesh, 0.8));
 
             const leavesGeo = new THREE.ConeGeometry(5, 15, 8);
             const leavesMesh = new THREE.Mesh(leavesGeo);
             leavesMesh.position.set(treeX, GROUND_Y + 15, treeZ);
             leavesMesh.updateMatrixWorld();
-            this.collidableObjects.push(new THREE.Box3().setFromObject(leavesMesh));
+            this.collidableObjects.push(this.createScaledBox(leavesMesh, 0.8));
         }
     }
 
