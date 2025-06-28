@@ -498,21 +498,23 @@ export default function Game({ mode, playerName: playerNameProp }: GameProps) {
                     const visualGroup = myPlane?.children[0] as THREE.Group;
 
                     if (myControlStyle === 'arcade') {
-                         const joystick = { ...joystickInput.current }; // copy to modify
-                         if (keysPressed.current['a']) joystick.x = -1;
-                         else if (keysPressed.current['d']) joystick.x = 1;
+                        const joystick = { ...joystickInput.current }; 
+                        if (keysPressed.current['a']) joystick.x = -1;
+                        else if (keysPressed.current['d']) joystick.x = 1;
+                        if (keysPressed.current['w']) joystick.y = -1;
+                        else if (keysPressed.current['s']) joystick.y = 1;
 
-                         if (keysPressed.current['w']) joystick.y = -1;
-                         else if (keysPressed.current['s']) joystick.y = 1;
+                        const yawAngle = -YAW_SPEED_MOBILE * joystick.x * delta;
+                        playerState.quaternion.multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), yawAngle));
 
-                         playerState.quaternion.multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), -YAW_SPEED_MOBILE * joystick.x * delta));
-                         playerState.position.y -= joystick.y * VERTICAL_SPEED_MOBILE * delta;
+                        const pitchAngle = PITCH_SPEED * joystick.y * delta;
+                        playerState.quaternion.multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), pitchAngle));
                          
-                         const targetRoll = -ROLL_SPEED * joystick.x * 0.5;
-                         const targetPitch = -PITCH_SPEED * joystick.y * 0.3;
-                         const visualEuler = new THREE.Euler(targetPitch, 0, targetRoll, 'XYZ');
-                         const visualQuaternion = new THREE.Quaternion().setFromEuler(visualEuler);
-                         if (visualGroup) visualGroup.quaternion.slerp(visualQuaternion, 0.1);
+                        const targetRoll = -ROLL_SPEED * joystick.x * 0.5;
+                        const visualEuler = new THREE.Euler(0, 0, targetRoll, 'XYZ');
+                        const visualQuaternion = new THREE.Quaternion().setFromEuler(visualEuler);
+                        if (visualGroup) visualGroup.quaternion.slerp(visualQuaternion, 0.1);
+
                     } else { // 'realistic'
                         if (keysPressed.current['w']) playerState.quaternion.multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), -PITCH_SPEED * delta));
                         if (keysPressed.current['s']) playerState.quaternion.multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), PITCH_SPEED * delta));
@@ -535,7 +537,15 @@ export default function Game({ mode, playerName: playerNameProp }: GameProps) {
                         playerState.gunCooldown = 0.1;
                         playerState.gunOverheat += 5;
                         const bulletId = Math.random().toString(36).substring(2, 15);
-                        const bulletVelocity = new THREE.Vector3(0, 0, -BULLET_SPEED).applyQuaternion(playerState.quaternion);
+
+                        let bulletQuaternion = playerState.quaternion;
+                        if (myControlStyle === 'arcade' && visualGroup) {
+                            const worldQuaternion = new THREE.Quaternion();
+                            visualGroup.getWorldQuaternion(worldQuaternion);
+                            bulletQuaternion = worldQuaternion;
+                        }
+                        const bulletVelocity = new THREE.Vector3(0, 0, -BULLET_SPEED).applyQuaternion(bulletQuaternion);
+
                         if (myPlane) {
                             const bulletGeo = new THREE.BoxGeometry(0.2, 0.2, 1);
                             const bulletMat = new THREE.MeshBasicMaterial({ color: 0xffff00 });
@@ -587,12 +597,13 @@ export default function Game({ mode, playerName: playerNameProp }: GameProps) {
                             if(isMe && myControlStyle === 'arcade') {
                                 const joystick = { ...joystickInput.current };
                                 const targetRoll = -ROLL_SPEED * joystick.x * 0.5;
-                                const targetPitch = -PITCH_SPEED * joystick.y * 0.3;
-                                const visualEuler = new THREE.Euler(targetPitch, 0, targetRoll, 'XYZ');
+                                const visualEuler = new THREE.Euler(0, 0, targetRoll, 'XYZ');
                                 const visualQuaternion = new THREE.Quaternion().setFromEuler(visualEuler);
+                                
+                                // slerp visual group for roll effect
                                 if (visualGroup) visualGroup.quaternion.slerp(visualQuaternion, 0.1);
 
-                                // The main body follows the server's quaternion
+                                // The main body follows the server's quaternion which now includes pitch/yaw
                                 planeMesh.position.lerp(newPos, INTERPOLATION_FACTOR);
                                 planeMesh.quaternion.slerp(newQuat, INTERPOLATION_FACTOR);
                             } else {
@@ -673,7 +684,7 @@ export default function Game({ mode, playerName: playerNameProp }: GameProps) {
                         <CardHeader><CardTitle className="text-5xl font-bold font-headline text-primary">Ready for Takeoff?</CardTitle></CardHeader>
                         <CardContent className="p-8 pt-0">
                             <p className="text-muted-foreground mb-6">Use WASD to steer, Shift for boost, and Left Click or Space to fire. Good luck!</p>
-                            <Button size="lg" className="w-full text-lg py-6" onClick={() => setGameStatus('playing')}>Start Flight</Button>
+                            <Button size="lg" className="w-full text-lg py-6" onClick={resetOfflineGame}>Start Flight</Button>
                         </CardContent>
                     </Card>
                 </div>

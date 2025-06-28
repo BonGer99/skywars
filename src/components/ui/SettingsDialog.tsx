@@ -13,6 +13,7 @@ import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
 import { useSettings } from '@/context/SettingsContext';
 import { Gamepad2, Mouse } from 'lucide-react';
 import type { ReactNode } from 'react';
+import { useIsMobile } from '@/hooks/use-is-mobile';
 
 export function SettingsDialog({ children }: { children: ReactNode }) {
   const {
@@ -21,6 +22,7 @@ export function SettingsDialog({ children }: { children: ReactNode }) {
     controlStyle,
     setControlStyle,
   } = useSettings();
+  const isMobile = useIsMobile();
 
   return (
     <Dialog>
@@ -46,29 +48,31 @@ export function SettingsDialog({ children }: { children: ReactNode }) {
               onCheckedChange={setOnScreenControls}
             />
           </div>
-          <div className="flex items-center space-x-4 rounded-md border p-4">
-            <Mouse />
-            <div className="flex-1 space-y-1">
-              <Label className="text-base">Desktop Control Style</Label>
-              <p className="text-sm text-muted-foreground">
-                Choose your preferred flight controls.
-              </p>
+          {!isMobile && (
+             <div className="flex items-center space-x-4 rounded-md border p-4">
+                <Mouse />
+                <div className="flex-1 space-y-1">
+                <Label className="text-base">Desktop Control Style</Label>
+                <p className="text-sm text-muted-foreground">
+                    Choose your preferred flight controls.
+                </p>
+                </div>
+                <RadioGroup
+                value={controlStyle}
+                onValueChange={(value) => setControlStyle(value as 'realistic' | 'arcade')}
+                className="flex flex-col space-y-1"
+                >
+                <div className="flex items-center space-x-2">
+                    <RadioGroupItem value="realistic" id="r1" />
+                    <Label htmlFor="r1">Realistic</Label>
+                </div>
+                <div className="flex items-center space-x-2">
+                    <RadioGroupItem value="arcade" id="r2" />
+                    <Label htmlFor="r2">Arcade</Label>
+                </div>
+                </RadioGroup>
             </div>
-            <RadioGroup
-              value={controlStyle}
-              onValueChange={(value) => setControlStyle(value as 'realistic' | 'arcade')}
-              className="flex flex-col space-y-1"
-            >
-              <div className="flex items-center space-x-2">
-                <RadioGroupItem value="realistic" id="r1" />
-                <Label htmlFor="r1">Realistic</Label>
-              </div>
-              <div className="flex items-center space-x-2">
-                <RadioGroupItem value="arcade" id="r2" />
-                <Label htmlFor="r2">Arcade</Label>
-              </div>
-            </RadioGroup>
-          </div>
+          )}
         </div>
       </DialogContent>
     </Dialog>
