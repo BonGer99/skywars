@@ -2,7 +2,7 @@
 'use client';
 
 import Link from 'next/link';
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from '@/components/ui/card';
@@ -13,6 +13,7 @@ import { useToast } from "@/hooks/use-toast";
 
 import { db } from '@/lib/firebase';
 import { collection, query, onSnapshot, doc, getDoc, setDoc } from 'firebase/firestore';
+import { Alert, AlertTitle, AlertDescription } from '@/components/ui/alert';
 
 type Server = {
   id: string;
@@ -55,7 +56,7 @@ function OnlinePageContent() {
   const [error, setError] = useState<string | null>(null);
   const { toast } = useToast();
 
-  useEffect(() => {
+  const memoizedSeedServers = useCallback(() => {
     seedServers().catch(err => {
         console.error("Failed to seed servers:", err);
         const description = "Could not initialize game servers. This is often due to Firestore security rules or network issues. Please check your Firebase console and internet connection.";
@@ -67,6 +68,10 @@ function OnlinePageContent() {
         });
         setIsLoading(false);
     });
+  }, [toast]);
+
+  useEffect(() => {
+    memoizedSeedServers();
 
     const q = query(collection(db, 'servers'));
     const unsubscribe = onSnapshot(q, (querySnapshot) => {
@@ -79,18 +84,13 @@ function OnlinePageContent() {
       setIsLoading(false);
     }, (err) => {
       console.error("Error fetching servers: ", err);
-      const description = "Could not connect to the server list. This usually means your Firestore security rules are blocking access. Please check them in the Firebase Console.";
+      const description = `Failed to connect to the server list. This can happen if your Firestore Security Rules are too restrictive. Please ensure they allow reads on the 'servers' collection. (Error: ${err.message})`;
       setError(description);
-      toast({
-          title: "Connection Error",
-          description: "Could not connect to the server list.",
-          variant: "destructive"
-      });
       setIsLoading(false);
     });
 
     return () => unsubscribe();
-  }, [toast]);
+  }, [memoizedSeedServers]);
 
   const handleJoinServer = async (server: Server) => {
     if (!playerName) {
@@ -113,7 +113,6 @@ function OnlinePageContent() {
 
     setIsJoining(server.id);
 
-    // We no longer create the player document here.
     // We just navigate to the game page with the server and player name.
     // The Game component itself will handle creating the player in the database.
     router.push(`/online-game?server=${server.id}&playerName=${encodeURIComponent(playerName)}`);
@@ -147,13 +146,14 @@ function OnlinePageContent() {
                     <Loader2 className="h-8 w-8 animate-spin text-primary" />
                  </div>
               ) : error ? (
-                <div className="text-center text-destructive p-4 border border-destructive/50 rounded-lg bg-destructive/10">
-                    <p className="font-bold">A connection error occurred.</p>
-                    <p className="text-sm">{error}</p>
-                </div>
+                <Alert variant="destructive">
+                  <AlertTitle>Connection Error</AlertTitle>
+                  <AlertDescription>{error}</AlertDescription>
+                </Alert>
               ) : servers.length === 0 ? (
-                <div className="text-center text-muted-foreground">
+                <div className="text-center text-muted-foreground p-4 border border-dashed rounded-lg">
                     <p>No servers available.</p>
+                    <p className="text-sm">This may be due to a network issue or restrictive Firestore security rules.</p>
                 </div>
               ) : (
                 <div className="border rounded-lg">
