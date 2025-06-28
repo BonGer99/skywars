@@ -194,7 +194,7 @@ export default function Game({ mode, playerName: playerNameProp }: GameProps) {
         const connect = async () => {
             try {
                 const protocol = window.location.protocol === "https:" ? "wss" : "ws";
-                const endpoint = `${protocol}://${window.location.hostname}:2567`;
+                const endpoint = `${protocol}://${window.location.host}`;
                 clientRef.current = new Colyseus.Client(endpoint);
                 
                 roomRef.current = await clientRef.current.joinOrCreate<VoxelAcesState>("voxel_aces_room", { playerName: playerNameProp });
