@@ -1,3 +1,4 @@
+
 import { Room, Client } from "@colyseus/core";
 import { VoxelAcesState, Player, Bullet } from "./state/VoxelAcesState";
 import * as THREE from 'three';
@@ -5,8 +6,8 @@ import * as THREE from 'three';
 // Constants
 const BASE_SPEED = 60;
 const BOOST_MULTIPLIER = 2.0;
-const PITCH_SPEED = 1.2;
-const ROLL_SPEED = 1.8;
+const PITCH_SPEED = 2.5;
+const ROLL_SPEED = 2.5;
 const YAW_SPEED = 1.0;
 const MAX_ALTITUDE = 220;
 const BOUNDARY = 950;
@@ -32,6 +33,27 @@ export class VoxelAcesRoom extends Room<VoxelAcesState> {
             const player = this.serverPlayers.get(client.sessionId);
             if (player) {
                 player.input = input;
+            }
+        });
+
+        this.onMessage("respawn", (client) => {
+            const playerState = this.state.players.get(client.sessionId);
+            if (playerState && playerState.health <= 0) {
+                const serverPlayer = this.serverPlayers.get(client.sessionId);
+                
+                playerState.health = PLAYER_HEALTH;
+                playerState.x = (Math.random() - 0.5) * 500;
+                playerState.y = 50;
+                playerState.z = (Math.random() - 0.5) * 500;
+                playerState.qx = 0;
+                playerState.qy = 0;
+                playerState.qz = 0;
+                playerState.qw = 1;
+
+                if (serverPlayer) {
+                    serverPlayer.position.set(playerState.x, playerState.y, playerState.z);
+                    serverPlayer.quaternion.set(0, 0, 0, 1);
+                }
             }
         });
     }
@@ -124,24 +146,6 @@ export class VoxelAcesRoom extends Room<VoxelAcesState> {
             // Boundary checks & respawn
             if (player.y < GROUND_Y || Math.abs(player.x) > BOUNDARY || Math.abs(player.z) > BOUNDARY || player.y > MAX_ALTITUDE) {
                 player.health = 0;
-            }
-
-            if (player.health <= 0) {
-                 // Respawn logic
-                setTimeout(() => {
-                    if (this.state.players.has(sessionId)) {
-                        const p = this.state.players.get(sessionId)!;
-                        p.health = PLAYER_HEALTH;
-                        p.x = (Math.random() - 0.5) * 500;
-                        p.y = 50;
-                        p.z = (Math.random() - 0.5) * 500;
-                        p.qx = 0; p.qy = 0; p.qz = 0; p.qw = 1;
-                        
-                        const sp = this.serverPlayers.get(sessionId)!;
-                        sp.position.set(p.x, p.y, p.z);
-                        sp.quaternion.set(0, 0, 0, 1);
-                    }
-                }, 3000); // 3-second respawn timer
             }
         });
 

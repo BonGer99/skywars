@@ -52,6 +52,12 @@ export default function Game({ mode, playerName: playerNameProp }: GameProps) {
     const router = useRouter();
 
     const [gameStatus, setGameStatus] = useState<GameStatus>('loading');
+    const gameStatusRef = useRef(gameStatus);
+    useEffect(() => {
+        gameStatusRef.current = gameStatus;
+    }, [gameStatus]);
+
+
     const [score, setScore] = useState(0);
     const [wave, setWave] = useState(1);
     const [playerHealth, setPlayerHealth] = useState(100);
@@ -74,17 +80,9 @@ export default function Game({ mode, playerName: playerNameProp }: GameProps) {
     }, [router]);
 
     const handlePlayAgain = useCallback(() => {
-        setGameStatus('loading');
-        setScore(0);
-        setWave(1);
-        setPlayerHealth(100);
-        setAltitude(0);
-        setShowAltitudeWarning(false);
-        setAltitudeWarningTimer(5);
-        setShowBoundaryWarning(false);
-        setBoundaryWarningTimer(7);
-        setWhiteoutOpacity(0);
-        setGameSessionId(id => id + 1);
+        if (roomRef.current) {
+            roomRef.current.send("respawn");
+        }
     }, []);
 
     useEffect(() => {
@@ -107,10 +105,10 @@ export default function Game({ mode, playerName: playerNameProp }: GameProps) {
         mount.appendChild(renderer.domElement);
         
         const handleResize = () => {
-            if (!mount) return;
-            camera.aspect = mount.clientWidth / mount.clientHeight;
+            if (!mountRef.current) return;
+            camera.aspect = mountRef.current.clientWidth / mountRef.current.clientHeight;
             camera.updateProjectionMatrix();
-            renderer.setSize(mount.clientWidth, mount.clientHeight);
+            renderer.setSize(mountRef.current.clientWidth, mountRef.current.clientHeight);
         };
         handleResize();
         
@@ -143,7 +141,7 @@ export default function Game({ mode, playerName: playerNameProp }: GameProps) {
             const myId = roomRef.current?.sessionId;
             const myPlane = myId ? localPlanes[myId] : null;
 
-            if (gameStatus === 'playing' && myPlane) {
+            if (gameStatusRef.current === 'playing' && myPlane) {
                 const currentAltitude = myPlane.position.y - ground.position.y;
                 setAltitude(currentAltitude);
                 
@@ -157,7 +155,7 @@ export default function Game({ mode, playerName: playerNameProp }: GameProps) {
                     setAltitudeWarningTimer(5);
                     setWhiteoutOpacity(0);
                 }
-                setShowAltitudeWarning(altWarn && gameStatus === 'playing');
+                setShowAltitudeWarning(altWarn && gameStatusRef.current === 'playing');
 
                 let boundaryWarn = false;
                 if (Math.abs(myPlane.position.x) > BOUNDARY || Math.abs(myPlane.position.z) > BOUNDARY) {
@@ -166,7 +164,7 @@ export default function Game({ mode, playerName: playerNameProp }: GameProps) {
                 } else {
                    setBoundaryWarningTimer(7);
                 }
-                setShowBoundaryWarning(boundaryWarn && gameStatus === 'playing');
+                setShowBoundaryWarning(boundaryWarn && gameStatusRef.current === 'playing');
 
                 const cameraOffset = new THREE.Vector3(0, 8, 15);
                 const idealOffset = cameraOffset.clone().applyQuaternion(myPlane.quaternion);
@@ -193,7 +191,6 @@ export default function Game({ mode, playerName: playerNameProp }: GameProps) {
                 setGameStatus('playing');
 
                 roomRef.current.onLeave(() => {
-                    // This can happen if the server shuts down or the player is kicked.
                     console.log("Disconnected from room.");
                     setGameStatus('gameover'); 
                 });
@@ -214,10 +211,16 @@ export default function Game({ mode, playerName: playerNameProp }: GameProps) {
                         planeMesh.quaternion.slerp(new THREE.Quaternion(player.qx, player.qy, player.qz, player.qw), 0.2);
                         
                         if(isMe) {
-                            setPlayerHealth(player.health);
+                            const currentHealth = player.health;
+                            const currentStatus = gameStatusRef.current;
+
+                            setPlayerHealth(currentHealth);
                             setScore(player.kills);
-                            if(player.health <= 0 && gameStatus !== 'gameover') {
+
+                            if (currentHealth <= 0 && currentStatus === 'playing') {
                                 setGameStatus('gameover');
+                            } else if (currentHealth > 0 && currentStatus === 'gameover') {
+                                setGameStatus('playing');
                             }
                         }
                     };
@@ -282,7 +285,6 @@ export default function Game({ mode, playerName: playerNameProp }: GameProps) {
         gameLoop(performance.now());
         
         return () => {
-            // Cleanup logic
             cancelAnimationFrame(animationFrameId);
             if (inputInterval) clearInterval(inputInterval);
             
@@ -295,16 +297,15 @@ export default function Game({ mode, playerName: playerNameProp }: GameProps) {
             roomRef.current?.leave();
             roomRef.current = null;
 
-            // Clear Three.js scene
             Object.values(localPlanes).forEach(plane => scene.remove(plane));
             Object.values(localBullets).forEach(bullet => scene.remove(bullet));
 
-            if(mount && renderer.domElement) {
-                mount.removeChild(renderer.domElement);
+            if(mountRef.current && renderer.domElement && mountRef.current.contains(renderer.domElement)) {
+                mountRef.current.removeChild(renderer.domElement);
             }
             renderer.dispose();
         };
-    }, [gameSessionId, mode, playerNameProp, router, gameStatus]); // gameStatus is important here
+    }, [gameSessionId, mode, playerNameProp, router]);
 
     return (
         <div className="relative w-screen h-screen bg-background overflow-hidden" onContextMenu={(e) => e.preventDefault()}>
