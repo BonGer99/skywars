@@ -14,8 +14,8 @@ import { useToast } from "@/hooks/use-toast";
 import * as GameActions from '@/app/game-actions';
 
 // Constants
-const MAX_ALTITUDE = 220;
 const BOUNDARY = 950;
+const MAX_ALTITUDE = 220;
 
 // Helper function to create plane meshes
 const createVoxelPlane = (color: THREE.ColorRepresentation) => {
@@ -150,6 +150,8 @@ export default function Game({ mode, serverId: serverIdProp, playerName: playerN
         const mount = mountRef.current;
         let animationFrameId: number;
         let stateUpdateInterval: NodeJS.Timeout;
+        let inputUpdateInterval: NodeJS.Timeout;
+
 
         // ---- 1. Synchronous Three.js Setup ----
         const scene = new THREE.Scene();
@@ -217,26 +219,6 @@ export default function Game({ mode, serverId: serverIdProp, playerName: playerN
             lastTime = time;
 
             if (gameStateRef.current === 'playing' && playerRef.current) {
-                // In online mode, the server handles physics. Here we just send input.
-                if(mode === 'online' && serverIdProp && playerIdRef.current) {
-                    const playerInput = {
-                        w: !!keysPressed['w'], s: !!keysPressed['s'], a: !!keysPressed['a'], d: !!keysPressed['d'],
-                        shift: !!keysPressed['shift'], space: !!keysPressed[' '], mouse0: !!keysPressed['mouse0'],
-                    };
-                    GameActions.sendInput(serverIdProp, playerIdRef.current, playerInput);
-
-                    if ((playerInput.space || playerInput.mouse0)) {
-                         const myPlayerState = localPlanesRef.current[playerIdRef.current];
-                         // A bit of client-side prediction for cooldowns
-                         if (myPlayerState) {
-                             GameActions.fireBullet(serverIdProp, playerIdRef.current, {
-                                 position: playerRef.current.position,
-                                 quaternion: playerRef.current.quaternion,
-                             });
-                         }
-                    }
-                }
-
                 // Handle warnings and camera updates locally
                 const currentAltitude = player.position.y - ground.position.y;
                 setAltitude(currentAltitude);
@@ -398,6 +380,18 @@ export default function Game({ mode, serverId: serverIdProp, playerName: playerN
 
             }, 100); // 10hz state sync
 
+            // Throttled input sending
+            inputUpdateInterval = setInterval(() => {
+                if (gameStateRef.current !== 'playing' || !serverIdProp || !playerIdRef.current) return;
+                
+                const playerInput = {
+                    w: !!keysPressed['w'], s: !!keysPressed['s'], a: !!keysPressed['a'], d: !!keysPressed['d'],
+                    shift: !!keysPressed['shift'], space: !!keysPressed[' '], mouse0: !!keysPressed['mouse0'],
+                };
+                GameActions.sendInput(serverIdProp, playerIdRef.current, playerInput);
+            }, 50); // 20hz input sync
+
+
           } catch (error) {
             console.error("Failed to join game:", error);
             toast({ title: "Error Joining Server", description: "Could not join the game server.", variant: "destructive" });
@@ -426,6 +420,7 @@ export default function Game({ mode, serverId: serverIdProp, playerName: playerN
         return () => {
             cancelAnimationFrame(animationFrameId);
             clearInterval(stateUpdateInterval);
+            clearInterval(inputUpdateInterval);
             window.removeEventListener('keydown', handleKeyDown);
             window.removeEventListener('keyup', handleKeyUp);
             window.removeEventListener('mousedown', handleMouseDown);
@@ -559,7 +554,3 @@ export default function Game({ mode, serverId: serverIdProp, playerName: playerN
         </div>
     );
 }
-
-    
-
-    

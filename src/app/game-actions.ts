@@ -35,14 +35,6 @@ export async function sendInput(
   gameState.updatePlayerInput(serverId, playerId, input);
 }
 
-export async function fireBullet(
-    serverId: string,
-    playerId: string,
-    bullet: { position: {x:number, y:number, z:number}; quaternion: {x:number, y:number, z:number, w:number} }
-) {
-    gameState.addBullet(serverId, playerId, bullet);
-}
-
 export async function getFullState(serverId: string) {
   return gameState.getGameState(serverId);
 }

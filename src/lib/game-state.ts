@@ -141,7 +141,7 @@ export function updatePlayerInput(serverId: string, playerId: string, input: Pla
   }
 }
 
-export function addBullet(serverId: string, playerId: string, bulletData: { position: {x:number, y:number, z:number}; quaternion: {x:number, y:number, z:number, w:number} }) {
+function addBullet(serverId: string, playerId: string, bulletData: { position: {x:number, y:number, z:number}; quaternion: {x:number, y:number, z:number, w:number} }) {
     if(!gameStates[serverId]) return;
     
     const bulletId = Math.random().toString(36).substring(2, 15);
@@ -210,9 +210,9 @@ function updateGame() {
       }
 
       if (player.isAI) {
-        updateAI(player, state, delta);
+        updateAI(player, state, delta, serverId);
       } else {
-        updatePlayer(player, delta);
+        updatePlayer(player, delta, serverId);
       }
 
       // Check boundary conditions and respawn dead players
@@ -267,7 +267,7 @@ function updateGame() {
   }
 }
 
-function updatePlayer(player: Player, delta: number) {
+function updatePlayer(player: Player, delta: number, serverId: string) {
   if (player.health <= 0) return;
   const input = player.input;
   
@@ -292,7 +292,11 @@ function updatePlayer(player: Player, delta: number) {
   if ((input.space || input.mouse0) && player.gunCooldown <= 0 && player.gunOverheat < 100) {
     player.gunCooldown = 0.1;
     player.gunOverheat += 5;
-    // Bullet creation is handled by the client sending an action
+    // Server is now authoritative for bullet creation.
+    addBullet(serverId, player.id, {
+        position: { x: player.position.x, y: player.position.y, z: player.position.z },
+        quaternion: { x: player.quaternion.x, y: player.quaternion.y, z: player.quaternion.z, w: player.quaternion.w }
+    });
   }
 }
 
@@ -343,7 +347,7 @@ function manageAIPopulation(serverId: string) {
 }
 
 
-function updateAI(ai: Player, state: GameState, delta: number) {
+function updateAI(ai: Player, state: GameState, delta: number, serverId: string) {
     if (ai.health <= 0) return;
     const now = Date.now();
     const allPlayers = Object.values(state.players);
@@ -398,7 +402,10 @@ function updateAI(ai: Player, state: GameState, delta: number) {
 
         // Check if target is in front and in range
         if (angle < 0.3 && distanceToTarget < AI_SHOOTING_RANGE) { 
-            addBullet(Object.keys(servers)[0], ai.id, { position: ai.position, quaternion: ai.quaternion });
+            addBullet(serverId, ai.id, {
+                position: {x: ai.position.x, y: ai.position.y, z: ai.position.z },
+                quaternion: {x: ai.quaternion.x, y: ai.quaternion.y, z: ai.quaternion.z, w: ai.quaternion.w }
+            });
             ai.gunCooldown = AI_SHOOTING_COOLDOWN;
         }
     }
@@ -407,5 +414,3 @@ function updateAI(ai: Player, state: GameState, delta: number) {
 
 // Start the server-side game loop
 setInterval(updateGame, 50); // 20 times per second
-
-    
