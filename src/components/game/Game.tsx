@@ -20,8 +20,8 @@ const MAX_ALTITUDE = 220;
 const GROUND_Y = -50;
 const BASE_SPEED = 60;
 const BOOST_MULTIPLIER = 2.0;
-const PITCH_SPEED = 1.0;
-const ROLL_SPEED = 1.0;
+const PITCH_SPEED = 1.5;
+const ROLL_SPEED = 2.5;
 const YAW_SPEED_MOBILE = 2.0;
 const VERTICAL_SPEED_MOBILE = 30;
 const BULLET_SPEED = 200;
@@ -490,38 +490,45 @@ export default function Game({ mode, playerName: playerNameProp }: GameProps) {
                 if (gameStatusRef.current !== 'playing') { renderer.render(scene, camera); return; }
                 
                 let myPlane: THREE.Group | null = null;
-                const myControlStyle = (onScreenControls && isMobile) ? 'arcade' : controlStyle;
                 
                 if (mode === 'offline') {
                     myPlane = localPlanes['offline_player'];
                     const playerState = offlinePlayerRef.current;
                     const visualGroup = myPlane?.children[0] as THREE.Group;
 
-                    if (myControlStyle === 'arcade') {
-                        const joystick = { ...joystickInput.current }; 
-                        if (keysPressed.current['a']) joystick.x = -1;
-                        else if (keysPressed.current['d']) joystick.x = 1;
-                        if (keysPressed.current['w']) joystick.y = -1;
-                        else if (keysPressed.current['s']) joystick.y = 1;
+                    // Handle input based on device
+                    if (onScreenControls && isMobile) {
+                        // On-screen joystick: Pitch and Roll
+                        const joystick = joystickInput.current;
+                        if (joystick.y !== 0) {
+                            playerState.quaternion.multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), PITCH_SPEED * joystick.y * delta));
+                        }
+                        if (joystick.x !== 0) {
+                            playerState.quaternion.multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 0, 1), -ROLL_SPEED * joystick.x * delta));
+                        }
+                    } else {
+                        // Keyboard controls: Use selected style
+                        if (controlStyle === 'arcade') {
+                            const keyboardInput = { x: 0, y: 0 }; 
+                            if (keysPressed.current['a']) keyboardInput.x = -1;
+                            else if (keysPressed.current['d']) keyboardInput.x = 1;
+                            if (keysPressed.current['w']) keyboardInput.y = -1;
+                            else if (keysPressed.current['s']) keyboardInput.y = 1;
 
-                        const yawAngle = -YAW_SPEED_MOBILE * joystick.x * delta;
-                        playerState.quaternion.multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), yawAngle));
+                            const yawAngle = -YAW_SPEED_MOBILE * keyboardInput.x * delta;
+                            playerState.quaternion.multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), yawAngle));
 
-                        const pitchAngle = PITCH_SPEED * -joystick.y * delta;
-                        playerState.quaternion.multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), pitchAngle));
-                         
-                        const targetRoll = -ROLL_SPEED * joystick.x * 0.5;
-                        const visualEuler = new THREE.Euler(0, 0, targetRoll, 'XYZ');
-                        const visualQuaternion = new THREE.Quaternion().setFromEuler(visualEuler);
-                        if (visualGroup) visualGroup.quaternion.slerp(visualQuaternion, 0.1);
-
-                    } else { // 'realistic'
-                        if (keysPressed.current['w']) playerState.quaternion.multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), -PITCH_SPEED * delta));
-                        if (keysPressed.current['s']) playerState.quaternion.multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), PITCH_SPEED * delta));
-                        if (keysPressed.current['a']) playerState.quaternion.multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 0, 1), ROLL_SPEED * delta));
-                        if (keysPressed.current['d']) playerState.quaternion.multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 0, 1), -ROLL_SPEED * delta));
-                        if (visualGroup) visualGroup.quaternion.slerp(new THREE.Quaternion(), 0.1);
+                            const pitchAngle = PITCH_SPEED * keyboardInput.y * delta;
+                            playerState.quaternion.multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), pitchAngle));
+                        } else { // 'realistic'
+                            if (keysPressed.current['w']) playerState.quaternion.multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), -PITCH_SPEED * delta));
+                            if (keysPressed.current['s']) playerState.quaternion.multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), PITCH_SPEED * delta));
+                            if (keysPressed.current['a']) playerState.quaternion.multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 0, 1), ROLL_SPEED * delta));
+                            if (keysPressed.current['d']) playerState.quaternion.multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 0, 1), -ROLL_SPEED * delta));
+                        }
                     }
+                    
+                    if (visualGroup) visualGroup.quaternion.set(0,0,0,1);
                     
                     const speed = keysPressed.current['shift'] ? BASE_SPEED * BOOST_MULTIPLIER : BASE_SPEED;
                     const forward = new THREE.Vector3(0, 0, -1).applyQuaternion(playerState.quaternion);
@@ -538,12 +545,7 @@ export default function Game({ mode, playerName: playerNameProp }: GameProps) {
                         playerState.gunOverheat += 5;
                         const bulletId = Math.random().toString(36).substring(2, 15);
 
-                        let bulletQuaternion = playerState.quaternion;
-                        if (myControlStyle === 'arcade' && visualGroup) {
-                            const worldQuaternion = new THREE.Quaternion();
-                            myPlane.getWorldQuaternion(worldQuaternion); // Use the main plane's world quaternion
-                            bulletQuaternion = worldQuaternion;
-                        }
+                        const bulletQuaternion = playerState.quaternion;
                         const bulletVelocity = new THREE.Vector3(0, 0, -BULLET_SPEED).applyQuaternion(bulletQuaternion);
 
                         if (myPlane) {
@@ -582,37 +584,19 @@ export default function Game({ mode, playerName: playerNameProp }: GameProps) {
                 }
 
                 if (mode === 'online' && roomRef.current) {
-                    const myId = roomRef.current.sessionId;
-                    myPlane = localPlanes[myId] || null;
+                    myPlane = localPlanes[roomRef.current.sessionId] || null;
                     roomRef.current.state.players.forEach((player, sessionId) => {
                         const planeMesh = localPlanes[sessionId];
                         if(planeMesh) {
                             const visualGroup = planeMesh.children[0] as THREE.Group;
-                            const isMe = sessionId === myId;
                             
                             const newPos = new THREE.Vector3(player.x, player.y, player.z);
                             const newQuat = new THREE.Quaternion(player.qx, player.qy, player.qz, player.qw);
 
-                            // Apply arcade visual tilt for the local player
-                            if(isMe && myControlStyle === 'arcade') {
-                                const joystick = { ...joystickInput.current };
-                                const targetRoll = -ROLL_SPEED * joystick.x * 0.5;
-                                const visualEuler = new THREE.Euler(0, 0, targetRoll, 'XYZ');
-                                const visualQuaternion = new THREE.Quaternion().setFromEuler(visualEuler);
-                                
-                                // slerp visual group for roll effect
-                                if (visualGroup) visualGroup.quaternion.slerp(visualQuaternion, 0.1);
+                            planeMesh.position.lerp(newPos, INTERPOLATION_FACTOR);
+                            planeMesh.quaternion.slerp(newQuat, INTERPOLATION_FACTOR);
 
-                                // The main body follows the server's quaternion which now includes pitch/yaw
-                                planeMesh.position.lerp(newPos, INTERPOLATION_FACTOR);
-                                planeMesh.quaternion.slerp(newQuat, INTERPOLATION_FACTOR);
-                            } else {
-                                // For other players or realistic mode, just interpolate everything
-                                planeMesh.position.lerp(newPos, INTERPOLATION_FACTOR);
-                                planeMesh.quaternion.slerp(newQuat, INTERPOLATION_FACTOR);
-                                const visualGroup = planeMesh.children[0] as THREE.Group;
-                                if (visualGroup) visualGroup.quaternion.slerp(new THREE.Quaternion(), 0.1); // Reset visual tilt for others
-                            }
+                            if (visualGroup) visualGroup.quaternion.set(0, 0, 0, 1);
                         }
                     });
                     roomRef.current.state.bullets.forEach((bullet, bulletId) => {

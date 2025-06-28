@@ -7,7 +7,7 @@ const WORLD_SEED = 12345;
 const BASE_SPEED = 60;
 const BOOST_MULTIPLIER = 2.0;
 const PITCH_SPEED = 1.5; 
-const ROLL_SPEED = 1.5;
+const ROLL_SPEED = 2.5;
 const MAX_ALTITUDE = 220;
 const BOUNDARY = 950;
 const GROUND_Y = -50;
@@ -176,26 +176,40 @@ export class VoxelAcesRoom extends Room<VoxelAcesState> {
             if (!serverPlayer || player.health <= 0) return;
 
             const input = serverPlayer.input || {};
-            const controlStyle = input.joystick ? 'arcade' : serverPlayer.controlStyle;
             
-            if (controlStyle === 'arcade') {
-                 const joystick = input.joystick || { x: 0, y: 0 };
-                 if (input.a) joystick.x = -1;
-                 if (input.d) joystick.x = 1;
-                 if (input.w) joystick.y = -1;
-                 if (input.s) joystick.y = 1;
- 
-                 const yawAngle = -YAW_SPEED_MOBILE * joystick.x * delta;
-                 serverPlayer.quaternion.multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), yawAngle));
+            // Handle joystick input (mobile) first - Pitch and Roll
+            if (input.joystick) {
+                const joystick = input.joystick;
 
-                 const pitchAngle = PITCH_SPEED * joystick.y * delta;
-                 serverPlayer.quaternion.multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), pitchAngle));
+                // Pitch (Up/Down on joystick)
+                if (joystick.y !== 0) {
+                    serverPlayer.quaternion.multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), PITCH_SPEED * joystick.y * delta));
+                }
+                
+                // Roll (Left/Right on joystick)
+                if (joystick.x !== 0) {
+                    serverPlayer.quaternion.multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 0, 1), -ROLL_SPEED * joystick.x * delta));
+                }
+            } else { // Handle Keyboard controls
+                const controlStyle = serverPlayer.controlStyle;
+                if (controlStyle === 'arcade') {
+                     const keyboardInput = { x: 0, y: 0 };
+                     if (input.a) keyboardInput.x = -1;
+                     if (input.d) keyboardInput.x = 1;
+                     if (input.w) keyboardInput.y = -1;
+                     if (input.s) keyboardInput.y = 1;
+     
+                     const yawAngle = -YAW_SPEED_MOBILE * keyboardInput.x * delta;
+                     serverPlayer.quaternion.multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), yawAngle));
 
-            } else { // 'realistic'
-                if (input.w) serverPlayer.quaternion.multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), -PITCH_SPEED * delta));
-                if (input.s) serverPlayer.quaternion.multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), PITCH_SPEED * delta));
-                if (input.a) serverPlayer.quaternion.multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 0, 1), ROLL_SPEED * delta));
-                if (input.d) serverPlayer.quaternion.multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 0, 1), -ROLL_SPEED * delta));
+                     const pitchAngle = PITCH_SPEED * keyboardInput.y * delta;
+                     serverPlayer.quaternion.multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), pitchAngle));
+                } else { // 'realistic'
+                    if (input.w) serverPlayer.quaternion.multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), -PITCH_SPEED * delta));
+                    if (input.s) serverPlayer.quaternion.multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), PITCH_SPEED * delta));
+                    if (input.a) serverPlayer.quaternion.multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 0, 1), ROLL_SPEED * delta));
+                    if (input.d) serverPlayer.quaternion.multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 0, 1), -ROLL_SPEED * delta));
+                }
             }
 
             const speed = input.shift ? BASE_SPEED * BOOST_MULTIPLIER : BASE_SPEED;
