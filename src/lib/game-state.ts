@@ -1,3 +1,4 @@
+
 // WARNING: This is a simplified in-memory store for a prototype.
 // In a real production environment with multiple server instances or serverless cold starts,
 // this state would be lost or become inconsistent.
@@ -19,6 +20,8 @@ const BULLET_SPEED = 200;
 const BULLET_LIFESPAN_MS = 5000;
 const PLAYER_HEALTH = 100;
 const TARGET_PLAYER_COUNT = 8;
+const AI_SHOOTING_RANGE = 500;
+const AI_SHOOTING_COOLDOWN = 1.5; // seconds
 
 export type PlayerInput = {
   w: boolean;
@@ -44,6 +47,7 @@ type Player = {
   behavior?: OpponentBehaviorOutput | null;
   nextBehaviorUpdate?: number;
   targetPosition?: THREE.Vector3;
+  targetPlayerId?: string | null;
   lastUpdateTime: number;
 };
 
@@ -94,7 +98,8 @@ export function getServers() {
 
 export function getPlayerCount(serverId: string): number {
   initializeGameState(serverId);
-  return Object.keys(gameStates[serverId].players).length;
+  // We only count human players for the lobby list
+  return Object.values(gameStates[serverId].players).filter(p => !p.isAI).length;
 }
 
 export function addPlayer(serverId: string, playerName: string) {
@@ -199,19 +204,24 @@ function updateGame() {
       const player = state.players[playerId];
 
       // Prune stale players
-      if(now - player.lastUpdateTime > 20000) {
+      if(now - player.lastUpdateTime > 20000 && !player.isAI) {
         removePlayer(serverId, playerId);
         continue;
       }
 
       if (player.isAI) {
-        updateAI(player, state.players, delta);
+        updateAI(player, state, delta);
       } else {
         updatePlayer(player, delta);
       }
 
-      // Check boundary conditions
-      if (player.position.y - GROUND_Y < 0 || Math.abs(player.position.x) > BOUNDARY || Math.abs(player.position.z) > BOUNDARY || player.position.y > MAX_ALTITUDE) {
+      // Check boundary conditions and respawn dead players
+      if (player.health <= 0) {
+        if(player.isAI) {
+            player.health = PLAYER_HEALTH;
+            player.position.set((Math.random() - 0.5) * 1500, Math.random() * 100 + 50, (Math.random() - 0.5) * 1500);
+        }
+      } else if (player.position.y - GROUND_Y < 0 || Math.abs(player.position.x) > BOUNDARY || Math.abs(player.position.z) > BOUNDARY || player.position.y > MAX_ALTITUDE) {
         player.health = 0;
       }
     }
@@ -247,11 +257,6 @@ function updateGame() {
                   const shooter = state.players[bullet.ownerId];
                   if (shooter) {
                       shooter.kills++;
-                  }
-                  // Respawn logic for AI
-                  if(target.isAI){
-                    target.health = PLAYER_HEALTH;
-                    target.position.set((Math.random() - 0.5) * 800, 50, (Math.random() - 0.5) * 800);
                   }
               }
               delete state.bullets[bulletId];
@@ -296,9 +301,9 @@ function manageAIPopulation(serverId: string) {
     const state = gameStates[serverId];
     if(!state) return;
 
-    const humanPlayers = Object.values(state.players).filter(p => !p.isAI);
-    const aiPlayers = Object.values(state.players).filter(p => p.isAI);
-    const totalPlayers = humanPlayers.length + aiPlayers.length;
+    const humanPlayerCount = Object.values(state.players).filter(p => !p.isAI).length;
+    const aiPlayerCount = Object.values(state.players).filter(p => p.isAI).length;
+    const totalPlayers = humanPlayerCount + aiPlayerCount;
 
     if (totalPlayers < TARGET_PLAYER_COUNT) {
         const numAIToAdd = TARGET_PLAYER_COUNT - totalPlayers;
@@ -312,50 +317,95 @@ function manageAIPopulation(serverId: string) {
                 position: new THREE.Vector3((Math.random() - 0.5) * 1500, Math.random() * 100 + 50, (Math.random() - 0.5) * 1500),
                 quaternion: new THREE.Quaternion(),
                 input: { w: false, s: false, a: false, d: false, shift: false, space: false, mouse0: false },
-                gunCooldown: 5,
+                gunCooldown: Math.random() * 2,
                 gunOverheat: 0,
                 isAI: true,
                 behavior: null,
                 nextBehaviorUpdate: 0,
                 targetPosition: new THREE.Vector3(),
+                targetPlayerId: null,
                 lastUpdateTime: Date.now()
             };
         }
-    } else if (humanPlayers.length > 0 && totalPlayers > TARGET_PLAYER_COUNT) {
+    } else if (humanPlayerCount > 0 && totalPlayers > TARGET_PLAYER_COUNT) {
         // Only remove AI if humans are present and we are over target
         const numAIToRemove = totalPlayers - TARGET_PLAYER_COUNT;
-        const aiToRemove = aiPlayers.slice(0, numAIToRemove);
+        const aiToRemove = Object.values(state.players).filter(p => p.isAI).slice(0, numAIToRemove);
         aiToRemove.forEach(ai => {
+            delete state.players[ai.id];
+        });
+    } else if (humanPlayerCount === 0 && aiPlayerCount > 0) {
+        // If all humans leave, clear out all the AI.
+        Object.values(state.players).filter(p => p.isAI).forEach(ai => {
             delete state.players[ai.id];
         });
     }
 }
 
 
-function updateAI(ai: Player, allPlayers: Record<string, Player>, delta: number) {
+function updateAI(ai: Player, state: GameState, delta: number) {
     if (ai.health <= 0) return;
     const now = Date.now();
+    const allPlayers = Object.values(state.players);
 
-    if (!ai.behavior || !ai.targetPosition || now > (ai.nextBehaviorUpdate ?? 0)) {
-        ai.nextBehaviorUpdate = now + (10 + Math.random() * 15) * 1000;
-        generateOpponentBehavior({ waveNumber: 5, playerSkillLevel: 'intermediate' })
-            .then(behavior => {
-                ai.behavior = behavior;
-                ai.targetPosition!.set((Math.random() - 0.5) * 1800, Math.random() * 150 + 50, (Math.random() - 0.5) * 1800);
-            }).catch(console.error);
-        return; // Wait for behavior
+    // AI decision making (every few seconds)
+    if (now > (ai.nextBehaviorUpdate ?? 0)) {
+        ai.nextBehaviorUpdate = now + (3 + Math.random() * 4) * 1000;
+        
+        const humanPlayers = allPlayers.filter(p => !p.isAI && p.health > 0);
+        
+        if (humanPlayers.length > 0) {
+            // Find the closest human player
+            let closestPlayer: Player | null = null;
+            let minDistance = Infinity;
+            for(const player of humanPlayers) {
+                const distance = ai.position.distanceTo(player.position);
+                if (distance < minDistance) {
+                    minDistance = distance;
+                    closestPlayer = player;
+                }
+            }
+            ai.targetPlayerId = closestPlayer!.id;
+        } else {
+            ai.targetPlayerId = null;
+            // No humans, fly to a random point
+            if(!ai.targetPosition || ai.position.distanceTo(ai.targetPosition) < 200) {
+                ai.targetPosition = new THREE.Vector3((Math.random() - 0.5) * 1800, Math.random() * 150 + 50, (Math.random() - 0.5) * 1800);
+            }
+        }
     }
     
-    const direction = new THREE.Vector3().subVectors(ai.targetPosition, ai.position).normalize();
-    ai.quaternion.slerp(new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 0, -1), direction), 0.05);
-    
-    ai.position.add(new THREE.Vector3(0, 0, -1).applyQuaternion(ai.quaternion).multiplyScalar(40 * delta));
+    // AI action
+    const targetPlayer = ai.targetPlayerId ? state.players[ai.targetPlayerId] : null;
+    const targetPosition = targetPlayer ? targetPlayer.position : ai.targetPosition;
 
-    if (ai.position.distanceTo(ai.targetPosition) < 150) {
-       ai.nextBehaviorUpdate = 0; // Get new behavior
+    if (targetPosition) {
+        const direction = new THREE.Vector3().subVectors(targetPosition, ai.position).normalize();
+        const idealQuaternion = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 0, -1), direction);
+        ai.quaternion.slerp(idealQuaternion, 0.05);
+    }
+    
+    const speed = BASE_SPEED * 0.8; // AI are slightly slower
+    ai.position.add(new THREE.Vector3(0, 0, -1).applyQuaternion(ai.quaternion).multiplyScalar(speed * delta));
+
+    // AI Shooting
+    ai.gunCooldown = Math.max(0, ai.gunCooldown - delta);
+    if (targetPlayer && ai.gunCooldown <= 0) {
+        const distanceToTarget = ai.position.distanceTo(targetPlayer.position);
+        const forwardVector = new THREE.Vector3(0, 0, -1).applyQuaternion(ai.quaternion);
+        const directionToTarget = new THREE.Vector3().subVectors(targetPlayer.position, ai.position).normalize();
+        const angle = forwardVector.angleTo(directionToTarget);
+
+        // Check if target is in front and in range
+        if (angle < 0.3 && distanceToTarget < AI_SHOOTING_RANGE) { 
+            addBullet(Object.keys(servers)[0], ai.id, { position: ai.position, quaternion: ai.quaternion });
+            ai.gunCooldown = AI_SHOOTING_COOLDOWN;
+        }
     }
 }
 
 
 // Start the server-side game loop
 setInterval(updateGame, 50); // 20 times per second
+
+    
