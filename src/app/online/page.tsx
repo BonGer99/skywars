@@ -12,7 +12,7 @@ import { ArrowLeft, Loader2, Users } from 'lucide-react';
 import { useToast } from "@/hooks/use-toast";
 
 import { db } from '@/lib/firebase';
-import { collection, query, onSnapshot, doc, getDoc, setDoc } from 'firebase/firestore';
+import { collection, query, onSnapshot, doc, getDoc, setDoc, getDocs } from 'firebase/firestore';
 import { Alert, AlertTitle, AlertDescription } from '@/components/ui/alert';
 
 type ServerInfo = {
@@ -35,7 +35,7 @@ async function seedServers() {
 
             if (!docSnap.exists()) {
                 console.log(`Server ${serverData.id} not found, seeding...`);
-                await setDoc(serverRef, { ...serverData, players: 0 }); // Seed with deprecated players field
+                await setDoc(serverRef, { ...serverData });
             }
         }
         console.log('Server check complete.');
@@ -102,17 +102,19 @@ function OnlinePageContent() {
 
       return onSnapshot(playersQuery, (snapshot) => {
         const now = Date.now();
-        const STALE_THRESHOLD_MS = 15000; // 15 seconds
+        const STALE_THRESHOLD_MS = 20000; // 20 seconds
         let activePlayers = 0;
 
         snapshot.forEach(doc => {
           const playerData = doc.data();
-          const lastSeenTimestamp = playerData.lastSeen?.toDate()?.getTime();
-          if (lastSeenTimestamp && (now - lastSeenTimestamp) < STALE_THRESHOLD_MS) {
-            activePlayers++;
+          // Count only non-AI players
+          if (!playerData.isAI) {
+              const lastSeenTimestamp = playerData.lastSeen?.toDate()?.getTime();
+              if (lastSeenTimestamp && (now - lastSeenTimestamp) < STALE_THRESHOLD_MS) {
+                activePlayers++;
+              }
           }
         });
-
         setPlayerCounts(prev => ({ ...prev, [server.id]: activePlayers }));
       });
     });

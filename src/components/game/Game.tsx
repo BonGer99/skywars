@@ -13,7 +13,7 @@ import { AlertDialog, AlertDialogTrigger, AlertDialogContent, AlertDialogHeader,
 import { Input } from '@/components/ui/input';
 import { useToast } from "@/hooks/use-toast";
 import { db } from '@/lib/firebase';
-import { doc, onSnapshot, collection, addDoc, serverTimestamp, deleteDoc, updateDoc, writeBatch, getDoc, runTransaction, increment } from 'firebase/firestore';
+import { doc, onSnapshot, collection, addDoc, serverTimestamp, deleteDoc, updateDoc, writeBatch, getDoc, runTransaction, increment, query, orderBy, limit, where } from 'firebase/firestore';
 
 
 type GameState = 'loading' | 'menu' | 'playing' | 'gameover';
@@ -36,8 +36,10 @@ type Bullet = {
 type Enemy = {
     mesh: THREE.Group;
     health: number;
-    behavior: OpponentBehaviorOutput;
+    behavior: OpponentBehaviorOutput | null;
     gunCooldown: number;
+    nextBehaviorUpdate: number;
+    targetPosition: THREE.Vector3;
 };
 
 type OtherPlayer = {
@@ -46,7 +48,7 @@ type OtherPlayer = {
     health: number;
 };
 
-const createVoxelPlane = (color: THREE.Color) => {
+const createVoxelPlane = (color: THREE.ColorRepresentation) => {
     const plane = new THREE.Group();
     const bodyMat = new THREE.MeshLambertMaterial({ color, flatShading: true });
     
@@ -67,11 +69,10 @@ const createVoxelPlane = (color: THREE.Color) => {
     cockpit.position.set(0, 0.8, -0.5);
     plane.add(cockpit);
 
-    // Add a larger, invisible hitbox
-    const hitboxGeo = new THREE.BoxGeometry(9, 3, 5); // A bit larger than the plane
+    const hitboxGeo = new THREE.BoxGeometry(9, 3, 5);
     const hitboxMat = new THREE.MeshBasicMaterial({ visible: false });
     const hitbox = new THREE.Mesh(hitboxGeo, hitboxMat);
-    hitbox.name = 'hitbox'; // Name it for easy lookup
+    hitbox.name = 'hitbox';
     plane.add(hitbox);
     
     return plane;
@@ -79,6 +80,7 @@ const createVoxelPlane = (color: THREE.Color) => {
 
 const MAX_ALTITUDE = 220;
 const BOUNDARY = 950;
+const TARGET_PLAYER_COUNT = 8;
 
 
 export default function Game({ mode, serverId: serverIdProp, playerName: playerNameProp }: GameProps) {
@@ -93,6 +95,7 @@ export default function Game({ mode, serverId: serverIdProp, playerName: playerN
     const [playerHealth, setPlayerHealth] = useState(100);
     const [gunOverheat, setGunOverheat] = useState(0);
     const [altitude, setAltitude] = useState(0);
+    const [isHost, setIsHost] = useState(false);
 
     // Warning UI State
     const [showAltitudeWarning, setShowAltitudeWarning] = useState(false);
@@ -107,16 +110,20 @@ export default function Game({ mode, serverId: serverIdProp, playerName: playerN
     const waveRef = useRef(wave);
     const altitudeWarningTimerRef = useRef(altitudeWarningTimer);
     const boundaryWarningTimerRef = useRef(boundaryWarningTimer);
+    const gameInitializedRef = useRef(false);
     
     // THREE.js & Game Object Refs
     const sceneRef = useRef<THREE.Scene | null>(null);
     const cameraRef = useRef<THREE.PerspectiveCamera | null>(null);
     const playerRef = useRef<THREE.Group | null>(null);
     const bulletsRef = useRef<Bullet[]>([]);
-    const enemiesRef = useRef<Enemy[]>([]);
+    const enemiesRef = useRef<Enemy[]>([]); // Offline mode enemies
+    const aiOpponentsRef = useRef<Record<string, Enemy>>({}); // Online mode AI
     const otherPlayersRef = useRef<Record<string, OtherPlayer>>({});
     const cameraOffsetRef = useRef(new THREE.Vector3(0, 8, 15));
     const lastUpdateTimeRef = useRef(0);
+    const hostIntervalRef = useRef<NodeJS.Timeout | null>(null);
+
 
     // Sync state to ref for use in game loop
     useEffect(() => { gameStateRef.current = gameState; }, [gameState]);
@@ -137,7 +144,7 @@ export default function Game({ mode, serverId: serverIdProp, playerName: playerN
         }
     };
 
-    const handlePlayerHit = useCallback(async (hitPlayerId: string) => {
+    const handlePlayerHit = useCallback(async (hitPlayerId: string, damage: number) => {
         if (!serverIdProp || !playerIdRef.current || hitPlayerId === playerIdRef.current) return;
 
         const hitPlayerDocRef = doc(db, 'servers', serverIdProp, 'players', hitPlayerId);
@@ -146,21 +153,26 @@ export default function Game({ mode, serverId: serverIdProp, playerName: playerN
         try {
             await runTransaction(db, async (transaction) => {
                 const hitPlayerDoc = await transaction.get(hitPlayerDocRef);
-                if (!hitPlayerDoc.exists()) {
-                    throw "Hit player document does not exist!";
-                }
+                if (!hitPlayerDoc.exists()) { throw "Hit player document does not exist!"; }
     
                 const currentHealth = hitPlayerDoc.data().health;
-                if (currentHealth <= 0) {
-                    return; // Don't do anything if they are already dead
-                }
-                const newHealth = Math.max(0, currentHealth - 10);
+                if (currentHealth <= 0) { return; }
+                const newHealth = Math.max(0, currentHealth - damage);
     
                 transaction.update(hitPlayerDocRef, { health: newHealth });
     
-                // If this hit was the one that killed them, I get a point.
                 if (currentHealth > 0 && newHealth === 0) {
                     transaction.update(myPlayerDocRef, { kills: increment(1) });
+                    
+                    // If an AI was killed by a player, reset it
+                    if (hitPlayerDoc.data().isAI) {
+                        const randomPos = { x: (Math.random() - 0.5) * 800, y: 50, z: (Math.random() - 0.5) * 800 };
+                         transaction.update(hitPlayerDocRef, {
+                            health: 100,
+                            position: randomPos,
+                            quaternion: { x: 0, y: 0, z: 0, w: 1 },
+                        });
+                    }
                 }
             });
         } catch (e) {
@@ -187,7 +199,7 @@ export default function Game({ mode, serverId: serverIdProp, playerName: playerN
 
         setPlayerHealth(100);
         setGunOverheat(0);
-        setAltitude(playerRef.current.position.y - (-50)); // Ground is at -50
+        setAltitude(playerRef.current.position.y - (-50));
         setShowAltitudeWarning(false);
         setAltitudeWarningTimer(5);
         setShowBoundaryWarning(false);
@@ -226,7 +238,7 @@ export default function Game({ mode, serverId: serverIdProp, playerName: playerN
         }
     }, [mode, serverIdProp, toast, resetGame]);
 
-    // ---- MAIN GAME SETUP EFFECT ----
+    // This effect runs once to set up the entire game
     useEffect(() => {
         if (typeof window === 'undefined' || !mountRef.current) return;
         
@@ -260,7 +272,7 @@ export default function Game({ mode, serverId: serverIdProp, playerName: playerN
         handleResize();
         window.addEventListener('resize', handleResize);
         
-        const player = createVoxelPlane(new THREE.Color(0x0077ff));
+        const player = createVoxelPlane(0x0077ff); // Player is blue
         playerRef.current = player;
         scene.add(player);
 
@@ -303,7 +315,60 @@ export default function Game({ mode, serverId: serverIdProp, playerName: playerN
         const keysPressed: Record<string, boolean> = {};
         let gunCooldown = 0;
         let lastTime = 0;
-        
+
+        const manageAIPopulation = async () => {
+             if (!serverIdProp) return;
+             const playersCollectionRef = collection(db, 'servers', serverIdProp, 'players');
+            
+             try {
+                await runTransaction(db, async (transaction) => {
+                    const allPlayersSnapshot = await transaction.get(query(playersCollectionRef));
+                    const humanPlayers = allPlayersSnapshot.docs.filter(doc => !doc.data().isAI);
+                    const aiPlayers = allPlayersSnapshot.docs.filter(doc => doc.data().isAI);
+                    const totalPlayers = humanPlayers.length + aiPlayers.length;
+
+                    if (totalPlayers < TARGET_PLAYER_COUNT) {
+                        const numAIToAdd = TARGET_PLAYER_COUNT - totalPlayers;
+                        for (let i = 0; i < numAIToAdd; i++) {
+                            const newAiRef = doc(playersCollectionRef);
+                            const randomPos = { x: (Math.random() - 0.5) * 1500, y: Math.random() * 100 + 50, z: (Math.random() - 0.5) * 1500 };
+                            transaction.set(newAiRef, {
+                                name: `AI Pilot ${String.fromCharCode(65 + Math.floor(Math.random() * 26))}${Math.floor(Math.random()*100)}`,
+                                isAI: true,
+                                joinedAt: serverTimestamp(),
+                                lastSeen: serverTimestamp(),
+                                kills: 0,
+                                health: 100,
+                                position: randomPos,
+                                quaternion: { x: 0, y: 0, z: 0, w: 1 },
+                            });
+                        }
+                    } else if (totalPlayers > TARGET_PLAYER_COUNT) {
+                        const numAIToRemove = totalPlayers - TARGET_PLAYER_COUNT;
+                        const aiToRemove = aiPlayers.slice(0, numAIToRemove);
+                        aiToRemove.forEach(aiDoc => {
+                            transaction.delete(aiDoc.ref);
+                        });
+                    }
+                });
+             } catch (error) {
+                console.error("Error managing AI population: ", error);
+             }
+        };
+
+        const electHost = async () => {
+            if (!serverIdProp || !playerIdRef.current) return false;
+            const playersQuery = query(collection(db, `servers/${serverIdProp}/players`), where("isAI", "!=", true), orderBy("joinedAt"), limit(1));
+            const snapshot = await getDocs(playersQuery);
+            if (!snapshot.empty) {
+                const hostId = snapshot.docs[0].id;
+                const amIHost = hostId === playerIdRef.current;
+                setIsHost(amIHost);
+                return amIHost;
+            }
+            return false;
+        };
+
         const gameLoop = (time: number) => {
             if (!isMounted) return;
             animationFrameId = requestAnimationFrame(gameLoop);
@@ -343,7 +408,6 @@ export default function Game({ mode, serverId: serverIdProp, playerName: playerN
                     }
                 }
 
-                // Altitude and Boundary checks
                 const currentAltitude = playerRef.current.position.y - ground.position.y;
                 setAltitude(currentAltitude);
                 if (currentAltitude <= 0 && playerHealth > 0) {
@@ -351,7 +415,6 @@ export default function Game({ mode, serverId: serverIdProp, playerName: playerN
                     if (gameStateRef.current === 'playing') setGameState('gameover');
                 }
                 
-                // Altitude Warning
                 if (currentAltitude > MAX_ALTITUDE) {
                     setShowAltitudeWarning(true);
                     setAltitudeWarningTimer(t => Math.max(0, t - delta));
@@ -367,7 +430,6 @@ export default function Game({ mode, serverId: serverIdProp, playerName: playerN
                     setWhiteoutOpacity(0);
                 }
 
-                // Boundary Warning
                 if (Math.abs(playerRef.current.position.x) > BOUNDARY || Math.abs(playerRef.current.position.z) > BOUNDARY) {
                     setShowBoundaryWarning(true);
                     setBoundaryWarningTimer(t => Math.max(0, t - delta));
@@ -380,7 +442,6 @@ export default function Game({ mode, serverId: serverIdProp, playerName: playerN
                     setBoundaryWarningTimer(7);
                 }
 
-                // Shooting logic
                 gunCooldown = Math.max(0, gunCooldown - delta);
                 setGunOverheat(o => Math.max(0, o - 15 * delta));
                 if ((keysPressed['mouse0'] || keysPressed[' ']) && gunCooldown <= 0 && gunOverheat < 100) {
@@ -402,25 +463,64 @@ export default function Game({ mode, serverId: serverIdProp, playerName: playerN
                          bulletMesh.quaternion.copy(bulletQuat);
                          scene.add(bulletMesh);
 
-                         bulletsRef.current.push({
+                         const newBullet = {
                             id: bulletId,
                             mesh: bulletMesh,
                             velocity: bulletVelocity,
                             ownerId: playerIdRef.current,
                             spawnTime: performance.now(),
-                         });
+                         };
+                         bulletsRef.current.push(newBullet);
 
                          if(mode === 'online' && serverIdProp) {
                             addDoc(collection(db, 'servers', serverIdProp, 'bullets'), {
                                 ownerId: playerIdRef.current,
                                 position: { x: bulletPos.x, y: bulletPos.y, z: bulletPos.z },
                                 quaternion: { x: bulletQuat.x, y: bulletQuat.y, z: bulletQuat.z, w: bulletQuat.w },
+                                velocity: { x: bulletVelocity.x, y: bulletVelocity.y, z: bulletVelocity.z },
                                 timestamp: serverTimestamp(),
                             }).catch(console.error);
                          }
                     }
                 }
             }
+
+            // Update AI Opponents (Host only)
+            if (isHost) {
+                const now = performance.now();
+                const batch = writeBatch(db);
+                let batchNeedsCommit = false;
+
+                Object.entries(aiOpponentsRef.current).forEach(([id, ai]) => {
+                    if (now > ai.nextBehaviorUpdate) {
+                        ai.nextBehaviorUpdate = now + (15 + Math.random() * 10) * 1000;
+                        generateOpponentBehavior({ waveNumber: 5, playerSkillLevel: 'intermediate' })
+                            .then(behavior => {
+                                ai.behavior = behavior;
+                                ai.targetPosition.set((Math.random() - 0.5) * 1800, Math.random() * 150 + 50, (Math.random() - 0.5) * 1800);
+                            }).catch(console.error);
+                    }
+
+                    if (ai.behavior) {
+                        const direction = new THREE.Vector3().subVectors(ai.targetPosition, ai.mesh.position).normalize();
+                        ai.mesh.quaternion.slerp(new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 0, -1), direction), 0.05);
+                        ai.mesh.position.add(new THREE.Vector3(0, 0, -1).applyQuaternion(ai.mesh.quaternion).multiplyScalar(40 * delta));
+
+                        if (ai.mesh.position.distanceTo(ai.targetPosition) < 100) {
+                           ai.nextBehaviorUpdate = 0; // Get new behavior
+                        }
+                    }
+                     const aiDocRef = doc(db, 'servers', serverIdProp!, 'players', id);
+                     batch.update(aiDocRef, {
+                        position: { x: ai.mesh.position.x, y: ai.mesh.position.y, z: ai.mesh.position.z },
+                        quaternion: { x: ai.mesh.quaternion.x, y: ai.mesh.quaternion.y, z: ai.mesh.quaternion.z, w: ai.mesh.quaternion.w },
+                        lastSeen: serverTimestamp()
+                     });
+                     batchNeedsCommit = true;
+                });
+                if(batchNeedsCommit) batch.commit().catch(console.error);
+            }
+
 
             // Bullet updates and collision detection
             for (let i = bulletsRef.current.length - 1; i >= 0; i--) {
@@ -429,31 +529,34 @@ export default function Game({ mode, serverId: serverIdProp, playerName: playerN
                 
                 let bulletRemoved = false;
 
-                // Only the player who fired the bullet checks for collision
+                // Player who fired bullet checks for collision
                 if (bullet.ownerId === playerIdRef.current) {
-                    if (mode === 'online') {
-                        for (const opponentId in otherPlayersRef.current) {
-                            if (opponentId === playerIdRef.current) continue; // Can't shoot myself
-
-                            const opponent = otherPlayersRef.current[opponentId];
-                            const opponentHitboxMesh = opponent.mesh?.getObjectByName('hitbox');
-
-                            if (opponent.health > 0 && opponentHitboxMesh) {
-                                const opponentBBox = new THREE.Box3().setFromObject(opponentHitboxMesh);
-                                if (opponentBBox.containsPoint(bullet.mesh.position)) {
-                                    handlePlayerHit(opponentId); // Deal damage through Firestore
-
-                                    scene.remove(bullet.mesh);
-                                    bulletsRef.current.splice(i, 1);
-                                    bulletRemoved = true;
-                                    break; // Exit opponent loop since bullet is gone
-                                }
+                    const checkCollision = (target: OtherPlayer | Enemy, targetId: string) => {
+                         const hitbox = target.mesh?.getObjectByName('hitbox');
+                         if (target.health > 0 && hitbox) {
+                            const targetBBox = new THREE.Box3().setFromObject(hitbox);
+                            if (targetBBox.containsPoint(bullet.mesh.position)) {
+                                handlePlayerHit(targetId, 10);
+                                scene.remove(bullet.mesh);
+                                bulletsRef.current.splice(i, 1);
+                                bulletRemoved = true;
+                                return true;
                             }
                         }
+                        return false;
+                    };
+                    
+                    if (mode === 'online') {
+                         for (const opponentId in otherPlayersRef.current) {
+                           if (checkCollision(otherPlayersRef.current[opponentId], opponentId)) break;
+                         }
+                         if (bulletRemoved) continue;
+                         for (const aiId in aiOpponentsRef.current) {
+                           if (checkCollision(aiOpponentsRef.current[aiId], aiId)) break;
+                         }
                     }
                 }
 
-                // Despawn bullet after time, if it wasn't already removed by a collision
                 if (!bulletRemoved && performance.now() - bullet.spawnTime > 5000) {
                     scene.remove(bullet.mesh);
                     bulletsRef.current.splice(i, 1);
@@ -462,7 +565,7 @@ export default function Game({ mode, serverId: serverIdProp, playerName: playerN
 
 
             // Update camera
-            if (playerRef.current && cameraRef.current) {
+            if (gameInitializedRef.current && playerRef.current && cameraRef.current) {
                 const idealOffset = cameraOffsetRef.current.clone().applyQuaternion(playerRef.current.quaternion);
                 const idealPosition = playerRef.current.position.clone().add(idealOffset);
                 camera.position.lerp(idealPosition, 0.1);
@@ -482,7 +585,6 @@ export default function Game({ mode, serverId: serverIdProp, playerName: playerN
         window.addEventListener('mousedown', handleMouseDown);
         window.addEventListener('mouseup', handleMouseUp);
         
-        // ---- 3. Asynchronous Game Initialization ----
         const initializeGame = async () => {
             if (!isMounted) return;
             resetGame();
@@ -494,8 +596,9 @@ export default function Game({ mode, serverId: serverIdProp, playerName: playerN
                 try {
                     const randomPos = { x: (Math.random() - 0.5) * 500, y: 50, z: (Math.random() - 0.5) * 500 };
                     
-                    const playerDocRef = await addDoc(collection(db, `servers/${serverIdProp}/players`), {
+                    const playerDocRefHandle = await addDoc(collection(db, `servers/${serverIdProp}/players`), {
                         name: playerNameProp,
+                        isAI: false,
                         joinedAt: serverTimestamp(),
                         lastSeen: serverTimestamp(),
                         kills: 0,
@@ -504,24 +607,29 @@ export default function Game({ mode, serverId: serverIdProp, playerName: playerN
                         quaternion: { x: 0, y: 0, z: 0, w: 1 },
                     });
                     
-                    playerIdRef.current = playerDocRef.id;
+                    playerIdRef.current = playerDocRefHandle.id;
 
-                    // Setup Firestore Listeners after we have a player ID
+                    const amIHost = await electHost();
+                    if(amIHost) {
+                       await manageAIPopulation();
+                       hostIntervalRef.current = setInterval(manageAIPopulation, 15000); // Check population every 15s
+                    }
+
                     const playersCollectionRef = collection(db, 'servers', serverIdProp, 'players');
                     unsubPlayers = onSnapshot(playersCollectionRef, (snapshot) => {
                         if (!sceneRef.current || !playerRef.current) return;
                         const scene = sceneRef.current;
                         const myId = playerIdRef.current;
                         const now = Date.now();
-                        const STALE_THRESHOLD_MS = 15000; 
+                        const STALE_THRESHOLD_MS = 20000; 
                         
-                        const currentPlayersOnScreen = { ...otherPlayersRef.current };
+                        const currentHumanIds = new Set(Object.keys(otherPlayersRef.current));
+                        const currentAiIds = new Set(Object.keys(aiOpponentsRef.current));
                         const freshPlayerIds = new Set<string>();
 
                         snapshot.forEach(docSnap => {
                             const data = docSnap.data();
                             const id = docSnap.id;
-
                             if (id === myId) {
                                 if (playerHealth !== data.health) setPlayerHealth(data.health);
                                 if (data.health <= 0 && gameStateRef.current === 'playing') setGameState('gameover');
@@ -530,33 +638,52 @@ export default function Game({ mode, serverId: serverIdProp, playerName: playerN
                             };
 
                             const lastSeenTimestamp = data.lastSeen?.toDate()?.getTime();
-                            if (lastSeenTimestamp && (now - lastSeenTimestamp < STALE_THRESHOLD_MS)) {
-                                freshPlayerIds.add(id);
-                                let otherPlayer = currentPlayersOnScreen[id];
+                            if (!lastSeenTimestamp || (now - lastSeenTimestamp > STALE_THRESHOLD_MS)) {
+                                return; // Skip stale players
+                            }
+                            freshPlayerIds.add(id);
 
+                            if (data.isAI) {
+                                let aiOpponent = aiOpponentsRef.current[id];
+                                if (!aiOpponent) {
+                                    const newPlane = createVoxelPlane(0xff0000); // AI is red
+                                    scene.add(newPlane);
+                                    aiOpponentsRef.current[id] = { mesh: newPlane, health: data.health || 100, behavior: null, gunCooldown: 5, nextBehaviorUpdate: 0, targetPosition: new THREE.Vector3() };
+                                    aiOpponent = aiOpponentsRef.current[id];
+                                }
+                                if (data.position) aiOpponent.mesh.position.lerp(new THREE.Vector3(data.position.x, data.position.y, data.position.z), 0.3);
+                                if (data.quaternion) aiOpponent.mesh.quaternion.slerp(new THREE.Quaternion(data.quaternion.x, data.quaternion.y, data.quaternion.z, data.quaternion.w), 0.3);
+                                aiOpponent.health = data.health;
+                                currentAiIds.delete(id);
+                            } else {
+                                let otherPlayer = otherPlayersRef.current[id];
                                 if (!otherPlayer) {
-                                    const newPlayerPlane = createVoxelPlane(new THREE.Color(0xffaa00));
+                                    const newPlayerPlane = createVoxelPlane(0xffaa00); // Other humans are orange
                                     scene.add(newPlayerPlane);
                                     otherPlayersRef.current[id] = { mesh: newPlayerPlane, name: data.name || 'Unknown', health: data.health || 100 };
                                     otherPlayer = otherPlayersRef.current[id];
                                 }
-
                                 if (data.position) otherPlayer.mesh.position.lerp(new THREE.Vector3(data.position.x, data.position.y, data.position.z), 0.3);
                                 if (data.quaternion) otherPlayer.mesh.quaternion.slerp(new THREE.Quaternion(data.quaternion.x, data.quaternion.y, data.quaternion.z, data.quaternion.w), 0.3);
                                 otherPlayer.health = data.health;
+                                currentHumanIds.delete(id);
                             }
                         });
                         
-                        for (const id in currentPlayersOnScreen) {
-                            if (!freshPlayerIds.has(id)) {
-                                scene.remove(currentPlayersOnScreen[id].mesh);
-                                delete otherPlayersRef.current[id];
-                            }
-                        }
+                        currentHumanIds.forEach(id => {
+                            scene.remove(otherPlayersRef.current[id].mesh);
+                            delete otherPlayersRef.current[id];
+                        });
+                        currentAiIds.forEach(id => {
+                            scene.remove(aiOpponentsRef.current[id].mesh);
+                            delete aiOpponentsRef.current[id];
+                        });
+
+                        electHost();
                     });
                     
                     const bulletsCollectionRef = collection(db, 'servers', serverIdProp, 'bullets');
-                    unsubBullets = onSnapshot(bulletsCollectionRef, (snapshot) => {
+                    unsubBullets = onSnapshot(query(bulletsCollectionRef, where("timestamp", ">", new Date())), (snapshot) => {
                          if (!sceneRef.current || !playerRef.current) return;
                          const myId = playerIdRef.current;
                          const batch = writeBatch(db);
@@ -564,15 +691,14 @@ export default function Game({ mode, serverId: serverIdProp, playerName: playerN
                             if (change.type === 'added') {
                                 const bulletData = change.doc.data();
                                 const docId = change.doc.id;
-
                                 if (bulletData.ownerId === myId) return;
 
                                 const bulletGeo = new THREE.BoxGeometry(0.2, 0.2, 1);
                                 const bulletMat = new THREE.MeshBasicMaterial({ color: 0xffaa00 });
                                 const bulletMesh = new THREE.Mesh(bulletGeo, bulletMat);
                                 bulletMesh.position.set(bulletData.position.x, bulletData.position.y, bulletData.position.z);
-                                bulletMesh.quaternion.set(bulletData.quaternion.x, bulletData.quaternion.y, bulletData.quaternion.z, bulletData.quaternion.w);
-                                const velocity = new THREE.Vector3(0, 0, -200).applyQuaternion(bulletMesh.quaternion);
+                                
+                                const velocity = new THREE.Vector3(bulletData.velocity.x, bulletData.velocity.y, bulletData.velocity.z);
                                 
                                 bulletsRef.current.push({
                                     id: docId,
@@ -591,15 +717,13 @@ export default function Game({ mode, serverId: serverIdProp, playerName: playerN
                          }
                     });
 
-                    // Heartbeat
                     heartbeatInterval = setInterval(() => {
                         if (playerIdRef.current) {
                             const playerDoc = doc(db, 'servers', serverIdProp, 'players', playerIdRef.current);
                             updateDoc(playerDoc, { lastSeen: serverTimestamp() }).catch(console.error);
                         }
                     }, 10000);
-
-                    // Position player and camera correctly before starting
+                    
                     if (playerRef.current) {
                         playerRef.current.position.set(randomPos.x, randomPos.y, randomPos.z);
                         playerRef.current.quaternion.set(0, 0, 0, 1);
@@ -612,6 +736,7 @@ export default function Game({ mode, serverId: serverIdProp, playerName: playerN
                     }
 
                     if (isMounted) {
+                        gameInitializedRef.current = true;
                         setGameState('playing');
                     }
 
@@ -626,7 +751,6 @@ export default function Game({ mode, serverId: serverIdProp, playerName: playerN
         initializeGame();
         gameLoop(performance.now());
 
-        // ---- 4. Cleanup ----
         return () => {
             isMounted = false;
             cancelAnimationFrame(animationFrameId);
@@ -637,6 +761,7 @@ export default function Game({ mode, serverId: serverIdProp, playerName: playerN
             window.removeEventListener('resize', handleResize);
             
             if (heartbeatInterval) clearInterval(heartbeatInterval);
+            if (hostIntervalRef.current) clearInterval(hostIntervalRef.current);
             if (unsubPlayers) unsubPlayers();
             if (unsubBullets) unsubBullets();
 
@@ -651,7 +776,7 @@ export default function Game({ mode, serverId: serverIdProp, playerName: playerN
                 mountRef.current.removeChild(renderer.domElement);
             }
         };
-    }, [mode, serverIdProp, playerNameProp, router, toast, resetGame, handlePlayerHit]);
+    }, [mode, serverIdProp, playerNameProp, router, toast, resetGame, handlePlayerHit, isHost]);
 
 
     const inviteLink = serverIdProp ? `${typeof window !== 'undefined' ? window.location.origin : ''}/online` : '';
