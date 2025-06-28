@@ -9,7 +9,10 @@ import HUD from '@/components/ui/HUD';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Loader2, Home } from 'lucide-react';
-import type { VoxelAcesState, Player } from '@/server/rooms/state/VoxelAcesState';
+import type { VoxelAcesState } from '@/server/rooms/state/VoxelAcesState';
+
+// Workaround for React.StrictMode, to avoid multiple join requests
+let hasActiveJoinRequest = false;
 
 // Constants
 const BOUNDARY = 950;
@@ -51,11 +54,12 @@ export default function Game({ mode, playerName: playerNameProp }: GameProps) {
     const mountRef = useRef<HTMLDivElement>(null);
     const router = useRouter();
 
-    const [gameStatus, setGameStatus] = useState<GameStatus>('loading');
-    const gameStatusRef = useRef(gameStatus);
-    useEffect(() => {
-        gameStatusRef.current = gameStatus;
-    }, [gameStatus]);
+    const gameStatusRef = useRef<GameStatus>('loading');
+    const setGameStatus = (status: GameStatus) => {
+        gameStatusRef.current = status;
+        _setGameStatus(status);
+    }
+    const [_gameStatus, _setGameStatus] = useState<GameStatus>('loading');
 
 
     const [score, setScore] = useState(0);
@@ -69,8 +73,6 @@ export default function Game({ mode, playerName: playerNameProp }: GameProps) {
     const [boundaryWarningTimer, setBoundaryWarningTimer] = useState(7);
     const [whiteoutOpacity, setWhiteoutOpacity] = useState(0);
     
-    const [gameSessionId, setGameSessionId] = useState(0);
-
     const roomRef = useRef<Colyseus.Room<VoxelAcesState> | null>(null);
     const keysPressed = useRef<Record<string, boolean>>({}).current;
 
@@ -92,6 +94,7 @@ export default function Game({ mode, playerName: playerNameProp }: GameProps) {
         let animationFrameId: number;
         let inputInterval: NodeJS.Timeout;
         let client: Colyseus.Client;
+        let joinRequest: Promise<Colyseus.Room<VoxelAcesState>>;
 
         const localPlanes: Record<string, THREE.Group> = {};
         const localBullets: Record<string, THREE.Mesh> = {};
@@ -125,7 +128,6 @@ export default function Game({ mode, playerName: playerNameProp }: GameProps) {
         ground.position.y = -50;
         scene.add(ground);
         
-        // Simplified scenery for brevity
         const scenery = new THREE.Group();
         scene.add(scenery);
         const cloudLayer = new THREE.Group();
@@ -181,22 +183,29 @@ export default function Game({ mode, playerName: playerNameProp }: GameProps) {
         const handleMouseDown = (e: MouseEvent) => { if(e.button === 0) keysPressed['mouse0'] = true; };
         const handleMouseUp = (e: MouseEvent) => { if(e.button === 0) keysPressed['mouse0'] = false; };
         
-        const connect = async () => {
-            try {
-                const protocol = window.location.protocol === "https:" ? "wss" : "ws";
-                const endpoint = `${protocol}://${window.location.host}`;
-                client = new Colyseus.Client(endpoint);
-                
-                roomRef.current = await client.joinOrCreate<VoxelAcesState>("voxel_aces_room", { playerName: playerNameProp });
+        if (mode === 'online') {
+            if (hasActiveJoinRequest) return;
+            hasActiveJoinRequest = true;
+
+            const protocol = window.location.protocol === "https:" ? "wss" : "ws";
+            const endpoint = `${protocol}://${window.location.host}`;
+            client = new Colyseus.Client(endpoint);
+            
+            joinRequest = client.joinOrCreate<VoxelAcesState>("voxel_aces_room", { playerName: playerNameProp });
+
+            joinRequest.then(room => {
+                roomRef.current = room;
                 setGameStatus('playing');
 
-                roomRef.current.onLeave(() => {
+                room.onLeave(() => {
                     console.log("Disconnected from room.");
-                    setGameStatus('gameover'); 
+                    if (gameStatusRef.current !== 'gameover') {
+                       setGameStatus('gameover'); 
+                    }
                 });
 
-                roomRef.current.state.players.onAdd((player, sessionId) => {
-                    const isMe = sessionId === roomRef.current?.sessionId;
+                room.state.players.onAdd((player, sessionId) => {
+                    const isMe = sessionId === room.sessionId;
                     const color = isMe ? 0x0077ff : 0xffaa00;
                     const planeMesh = createVoxelPlane(color);
                     
@@ -226,14 +235,14 @@ export default function Game({ mode, playerName: playerNameProp }: GameProps) {
                     };
                 });
                 
-                roomRef.current.state.players.onRemove((player, sessionId) => {
+                room.state.players.onRemove((player, sessionId) => {
                     if (localPlanes[sessionId]) {
                         scene.remove(localPlanes[sessionId]);
                         delete localPlanes[sessionId];
                     }
                 });
 
-                roomRef.current.state.bullets.onAdd((bullet, bulletId) => {
+                room.state.bullets.onAdd((bullet, bulletId) => {
                     const bulletGeo = new THREE.BoxGeometry(0.2, 0.2, 1);
                     const bulletMat = new THREE.MeshBasicMaterial({ color: 0xffff00 });
                     const bulletMesh = new THREE.Mesh(bulletGeo, bulletMat);
@@ -246,7 +255,7 @@ export default function Game({ mode, playerName: playerNameProp }: GameProps) {
                     }
                 });
                 
-                roomRef.current.state.bullets.onRemove((bullet, bulletId) => {
+                room.state.bullets.onRemove((bullet, bulletId) => {
                     if(localBullets[bulletId]) {
                         scene.remove(localBullets[bulletId]);
                         delete localBullets[bulletId];
@@ -263,16 +272,13 @@ export default function Game({ mode, playerName: playerNameProp }: GameProps) {
                     }
                 }, 1000 / 20); // 20hz
 
-            } catch (e) {
+            }).catch(e => {
                 console.error("JOIN ERROR", e);
                 router.push('/online');
-            }
-        };
-
-        if (mode === 'online') {
-            connect();
+            }).finally(() => {
+                hasActiveJoinRequest = false;
+            });
         } else {
-            // Offline mode setup (can be expanded later)
             setGameStatus('menu'); 
         }
 
@@ -288,15 +294,15 @@ export default function Game({ mode, playerName: playerNameProp }: GameProps) {
             cancelAnimationFrame(animationFrameId);
             if (inputInterval) clearInterval(inputInterval);
             
+            joinRequest?.then(room => room?.leave());
+            hasActiveJoinRequest = false; // Reset on unmount
+            
             window.removeEventListener('keydown', handleKeyDown);
             window.removeEventListener('keyup', handleKeyUp);
             window.removeEventListener('mousedown', handleMouseDown);
             window.removeEventListener('mouseup', handleMouseUp);
             window.removeEventListener('resize', handleResize);
             
-            roomRef.current?.leave();
-            roomRef.current = null;
-
             Object.values(localPlanes).forEach(plane => scene.remove(plane));
             Object.values(localBullets).forEach(bullet => scene.remove(bullet));
 
@@ -305,7 +311,7 @@ export default function Game({ mode, playerName: playerNameProp }: GameProps) {
             }
             renderer.dispose();
         };
-    }, [gameSessionId, mode, playerNameProp, router]);
+    }, [mode, playerNameProp, router]); // Re-run effect only when mode or player name changes
 
     return (
         <div className="relative w-screen h-screen bg-background overflow-hidden" onContextMenu={(e) => e.preventDefault()}>
@@ -316,14 +322,14 @@ export default function Game({ mode, playerName: playerNameProp }: GameProps) {
                 style={{ opacity: whiteoutOpacity, transition: 'opacity 0.5s' }}
             />
 
-            {gameStatus === 'loading' && (
+            {_gameStatus === 'loading' && (
                 <div className="absolute inset-0 flex flex-col items-center justify-center bg-background z-20">
                     <Loader2 className="h-16 w-16 animate-spin text-primary" />
                     <p className="text-xl mt-4 font-headline">{mode === 'online' ? 'Connecting to Arena...' : 'Loading Voxel Skies...'}</p>
                 </div>
             )}
             
-            {gameStatus === 'playing' && (
+            {_gameStatus === 'playing' && (
                  <div className="absolute top-4 right-4 z-20">
                     <Button onClick={handleLeaveGame} variant="outline" size="icon" className="h-10 w-10 rounded-full bg-black/30 text-white border-primary/50 backdrop-blur-sm hover:bg-destructive/50">
                         <Home className="h-5 w-5"/>
@@ -332,7 +338,7 @@ export default function Game({ mode, playerName: playerNameProp }: GameProps) {
                 </div>
             )}
 
-            {gameStatus === 'menu' && mode === 'offline' && (
+            {_gameStatus === 'menu' && mode === 'offline' && (
                  <div className="absolute inset-0 flex items-center justify-center z-10">
                     <Card className="max-w-md mx-auto bg-card/80 backdrop-blur-sm border-primary/20 shadow-xl text-center">
                         <CardHeader><CardTitle className="text-5xl font-bold font-headline text-primary">Ready for Takeoff?</CardTitle></CardHeader>
@@ -344,7 +350,7 @@ export default function Game({ mode, playerName: playerNameProp }: GameProps) {
                 </div>
             )}
 
-            {showAltitudeWarning && gameStatus === 'playing' && (
+            {showAltitudeWarning && _gameStatus === 'playing' && (
                 <div className="absolute top-1/3 left-1/2 -translate-x-1/2 z-20 text-center">
                     <Card className="bg-destructive/80 text-destructive-foreground p-4 border-2 border-destructive-foreground">
                         <CardTitle className="text-3xl font-bold">WARNING: ALTITUDE CRITICAL</CardTitle>
@@ -356,7 +362,7 @@ export default function Game({ mode, playerName: playerNameProp }: GameProps) {
                 </div>
             )}
 
-            {showBoundaryWarning && gameStatus === 'playing' && (
+            {showBoundaryWarning && _gameStatus === 'playing' && (
                 <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 z-20 text-center">
                      <Card className="bg-destructive/80 text-destructive-foreground p-4 border-2 border-destructive-foreground">
                         <CardTitle className="text-3xl font-bold">WARNING: LEAVING BATTLEFIELD</CardTitle>
@@ -368,11 +374,11 @@ export default function Game({ mode, playerName: playerNameProp }: GameProps) {
                 </div>
             )}
             
-            {gameStatus === 'playing' && roomRef.current && (
+            {_gameStatus === 'playing' && roomRef.current && roomRef.current.state.players && (
                  <HUD score={score} wave={wave} health={playerHealth} overheat={0} altitude={altitude} mode={mode} serverId={roomRef.current.id} players={roomRef.current.state.players} />
             )}
 
-            {gameStatus === 'gameover' && (
+            {_gameStatus === 'gameover' && (
                 <div className="absolute inset-0 flex items-center justify-center bg-black/50 z-10">
                      <Card className="max-w-md mx-auto bg-card/80 backdrop-blur-sm border-destructive/50 shadow-xl text-center">
                         <CardHeader><CardTitle className="text-5xl font-bold font-headline text-destructive">Shot Down!</CardTitle></CardHeader>

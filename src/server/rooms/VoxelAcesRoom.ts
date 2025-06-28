@@ -6,8 +6,8 @@ import * as THREE from 'three';
 // Constants
 const BASE_SPEED = 60;
 const BOOST_MULTIPLIER = 2.0;
-const PITCH_SPEED = 2.5;
-const ROLL_SPEED = 2.5;
+const PITCH_SPEED = 3.5;
+const ROLL_SPEED = 3.5;
 const YAW_SPEED = 1.0;
 const MAX_ALTITUDE = 220;
 const BOUNDARY = 950;
