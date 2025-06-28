@@ -2,11 +2,11 @@
 'use client';
 
 import { useState, useEffect } from 'react';
-import { db } from '@/lib/firebase';
-import { collection, query, onSnapshot, orderBy, limit } from 'firebase/firestore';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Crown } from 'lucide-react';
+import { getFullState } from '@/app/game-actions';
+
 
 interface ServerLeaderboardProps {
   serverId: string;
@@ -24,21 +24,26 @@ export default function ServerLeaderboard({ serverId }: ServerLeaderboardProps) 
   useEffect(() => {
     if (!serverId) return;
 
-    const q = query(
-      collection(db, 'servers', serverId, 'players'),
-      orderBy('kills', 'desc'),
-      limit(5)
-    );
+    const fetchLeaderboard = async () => {
+        try {
+            const state = await getFullState(serverId);
+            if (state && state.players) {
+                const playersData: Player[] = Object.values(state.players)
+                    .map((p: any) => ({ id: p.id, name: p.name, kills: p.kills, isAI: p.isAI }))
+                    .filter(p => !p.isAI) // Don't show AI on leaderboard
+                    .sort((a, b) => b.kills - a.kills)
+                    .slice(0, 5);
+                setPlayers(playersData);
+            }
+        } catch (e) {
+            console.error("Failed to fetch leaderboard", e);
+        }
+    };
+    
+    fetchLeaderboard();
+    const interval = setInterval(fetchLeaderboard, 2000); // update leaderboard every 2 seconds
 
-    const unsubscribe = onSnapshot(q, (querySnapshot) => {
-      const playersData: Player[] = [];
-      querySnapshot.forEach((doc) => {
-        playersData.push({ id: doc.id, ...doc.data() } as Player);
-      });
-      setPlayers(playersData);
-    });
-
-    return () => unsubscribe();
+    return () => clearInterval(interval);
   }, [serverId]);
 
   return (
@@ -58,7 +63,7 @@ export default function ServerLeaderboard({ serverId }: ServerLeaderboardProps) 
             </TableRow>
           </TableHeader>
           <TableBody>
-            {players.map((player, index) => (
+            {players.map((player) => (
               <TableRow key={player.id} className="border-b-0">
                 <TableCell className="p-1 font-medium truncate">{player.name}</TableCell>
                 <TableCell className="p-1 text-right">{player.kills}</TableCell>

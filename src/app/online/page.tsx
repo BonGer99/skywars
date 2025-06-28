@@ -10,119 +10,49 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { ArrowLeft, Loader2, Users } from 'lucide-react';
 import { useToast } from "@/hooks/use-toast";
-
-import { db } from '@/lib/firebase';
-import { collection, query, onSnapshot, doc, getDoc, setDoc, getDocs } from 'firebase/firestore';
 import { Alert, AlertTitle, AlertDescription } from '@/components/ui/alert';
+import { getServerList } from '@/app/game-actions';
+
 
 type ServerInfo = {
   id: string;
   name: string;
   region: string;
   maxPlayers: number;
+  playerCount: number;
 };
-
-const initialServers: Omit<ServerInfo, 'id'> & { id: string }[] = [
-  { id: 'europe-server', name: 'Aces High - Europe', region: 'Europe', maxPlayers: 24 },
-];
-
-async function seedServers() {
-    console.log('Checking for servers...');
-    try {
-        for (const serverData of initialServers) {
-            const serverRef = doc(db, 'servers', serverData.id);
-            const docSnap = await getDoc(serverRef);
-
-            if (!docSnap.exists()) {
-                console.log(`Server ${serverData.id} not found, seeding...`);
-                await setDoc(serverRef, { ...serverData });
-            }
-        }
-        console.log('Server check complete.');
-    } catch (error) {
-        console.error("Error seeding servers: ", error);
-        throw error;
-    }
-}
 
 
 function OnlinePageContent() {
   const router = useRouter();
   const [servers, setServers] = useState<ServerInfo[]>([]);
-  const [playerCounts, setPlayerCounts] = useState<Record<string, number>>({});
   const [playerName, setPlayerName] = useState('');
   const [isJoining, setIsJoining] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const { toast } = useToast();
 
-  const memoizedSeedServers = useCallback(() => {
-    seedServers().catch(err => {
-        console.error("Failed to seed servers:", err);
-        const description = "Could not initialize game servers. This is often due to Firestore security rules or network issues. Please check your Firebase console and internet connection.";
-        setError(description);
-        toast({
-            title: "Server Initialization Failed",
-            description: description,
-            variant: "destructive",
-        });
-        setIsLoading(false);
-    });
-  }, [toast]);
-
-  // Effect to get static server metadata
-  useEffect(() => {
-    memoizedSeedServers();
-
-    const q = query(collection(db, 'servers'));
-    const unsubscribe = onSnapshot(q, (querySnapshot) => {
-      const serversData: ServerInfo[] = [];
-      querySnapshot.forEach((doc) => {
-        serversData.push({ id: doc.id, ...doc.data() } as ServerInfo);
-      });
-      setServers(serversData);
+  const fetchServers = useCallback(async () => {
+    setIsLoading(true);
+    try {
+      const serverList = await getServerList();
+      setServers(serverList);
       setError(null);
-      setIsLoading(false);
-    }, (err) => {
+    } catch (err: any) {
       console.error("Error fetching servers: ", err);
-      const description = `Failed to connect to the server list. This can happen if your Firestore Security Rules are too restrictive. Please ensure they allow reads on the 'servers' collection. (Error: ${err.message})`;
+      const description = `Failed to connect to the server list. The game server might be restarting. Please try again in a moment. (Error: ${err.message})`;
       setError(description);
+    } finally {
       setIsLoading(false);
-    });
+    }
+  }, []);
 
-    return () => unsubscribe();
-  }, [memoizedSeedServers]);
-  
-  // Effect to get live player counts for each server
   useEffect(() => {
-    if (servers.length === 0) return;
+    fetchServers();
+    const interval = setInterval(fetchServers, 5000); // Refresh server list every 5 seconds
+    return () => clearInterval(interval);
+  }, [fetchServers]);
 
-    const unsubscribers = servers.map(server => {
-      const playersQuery = query(collection(db, 'servers', server.id, 'players'));
-
-      return onSnapshot(playersQuery, (snapshot) => {
-        const now = Date.now();
-        const STALE_THRESHOLD_MS = 20000; // 20 seconds
-        let activePlayers = 0;
-
-        snapshot.forEach(doc => {
-          const playerData = doc.data();
-          // Count only non-AI players
-          if (!playerData.isAI) {
-              const lastSeenTimestamp = playerData.lastSeen?.toDate()?.getTime();
-              if (lastSeenTimestamp && (now - lastSeenTimestamp) < STALE_THRESHOLD_MS) {
-                activePlayers++;
-              }
-          }
-        });
-        setPlayerCounts(prev => ({ ...prev, [server.id]: activePlayers }));
-      });
-    });
-
-    return () => {
-      unsubscribers.forEach(unsub => unsub());
-    };
-  }, [servers]);
 
   const handleJoinServer = async (server: ServerInfo) => {
     if (!playerName) {
@@ -134,9 +64,7 @@ function OnlinePageContent() {
       return;
     }
     
-    const playerCount = playerCounts[server.id] ?? 0;
-
-    if (playerCount >= server.maxPlayers) {
+    if (server.playerCount >= server.maxPlayers) {
       toast({
         title: "Server Full",
         description: "This server is currently full. Please try another one.",
@@ -173,7 +101,7 @@ function OnlinePageContent() {
 
             <div className="space-y-4">
               <h3 className="text-center text-xl font-semibold text-foreground/90">Server List</h3>
-              {isLoading ? (
+              {isLoading && servers.length === 0 ? (
                  <div className="flex justify-center items-center h-40">
                     <Loader2 className="h-8 w-8 animate-spin text-primary" />
                  </div>
@@ -182,16 +110,14 @@ function OnlinePageContent() {
                   <AlertTitle>Connection Error</AlertTitle>
                   <AlertDescription>{error}</AlertDescription>
                 </Alert>
-              ) : servers.length === 0 ? (
+              ) : servers.length === 0 && !isLoading ? (
                 <div className="text-center text-muted-foreground p-4 border border-dashed rounded-lg">
                     <p>No servers available.</p>
-                    <p className="text-sm">This may be due to a network issue or restrictive Firestore security rules.</p>
                 </div>
               ) : (
                 <div className="border rounded-lg">
                   {servers.map((server) => {
-                    const playerCount = playerCounts[server.id] ?? 0;
-                    const isFull = playerCount >= server.maxPlayers;
+                    const isFull = server.playerCount >= server.maxPlayers;
                     return (
                         <div key={server.id} className="flex items-center justify-between p-4 border-b last:border-b-0">
                             <div>
@@ -201,7 +127,7 @@ function OnlinePageContent() {
                             <div className="flex items-center gap-4">
                                 <div className="flex items-center gap-2 text-sm text-muted-foreground">
                                     <Users className="h-4 w-4" />
-                                    <span>{playerCount} / {server.maxPlayers}</span>
+                                    <span>{server.playerCount} / {server.maxPlayers}</span>
                                 </div>
                                 <Button 
                                     onClick={() => handleJoinServer(server)} 

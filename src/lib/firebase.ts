@@ -1,4 +1,7 @@
-// Import the functions you need from the SDKs you need
+// This file is now primarily for configuration and potential future use
+// with services like Firebase Auth. The real-time database logic for gameplay
+// has been moved to an in-memory model.
+
 import { initializeApp, getApps, getApp } from "firebase/app";
 import { getFirestore } from "firebase/firestore";
 
@@ -14,6 +17,7 @@ const firebaseConfig = {
 
 // Initialize Firebase
 const app = !getApps().length ? initializeApp(firebaseConfig) : getApp();
+// We keep Firestore initialized for potential future use (e.g. storing user profiles, hangar setups, etc.)
 const db = getFirestore(app);
 
 export { db };
