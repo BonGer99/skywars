@@ -1,8 +1,7 @@
-
 'use client';
 
 import Link from 'next/link';
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from '@/components/ui/card';
@@ -17,6 +16,13 @@ function OnlinePageContent() {
   const [isJoining, setIsJoining] = useState(false);
   const { toast } = useToast();
 
+  useEffect(() => {
+    const savedName = localStorage.getItem('voxelAcesPlayerName');
+    if (savedName) {
+      setPlayerName(savedName);
+    }
+  }, []);
+
   const handleJoin = () => {
     if (!playerName.trim()) {
       toast({
@@ -27,6 +33,7 @@ function OnlinePageContent() {
       return;
     }
     setIsJoining(true);
+    localStorage.setItem('voxelAcesPlayerName', playerName.trim());
     router.push(`/online-game?playerName=${encodeURIComponent(playerName)}`);
   };
 

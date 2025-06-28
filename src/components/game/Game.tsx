@@ -1,4 +1,3 @@
-
 'use client';
 
 import * as THREE from 'three';
@@ -8,7 +7,7 @@ import { useRouter } from 'next/navigation';
 import HUD from '@/components/ui/HUD';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { Loader2, Home, LocateFixed } from 'lucide-react';
+import { Loader2, LocateFixed } from 'lucide-react';
 import type { VoxelAcesState, Player } from '@/server/rooms/state/VoxelAcesState';
 import { useSettings } from '@/context/SettingsContext';
 import { useIsMobile } from '@/hooks/use-is-mobile';
@@ -20,40 +19,41 @@ const MAX_ALTITUDE = 220;
 const GROUND_Y = -50;
 const BASE_SPEED = 60;
 const BOOST_MULTIPLIER = 2.0;
-const PITCH_SPEED = 2.5;
-const ROLL_SPEED = 2.5;
+const PITCH_SPEED = 2.0;
+const ROLL_SPEED = 2.0;
+const YAW_SPEED_MOBILE = 2.0;
+const VERTICAL_SPEED_MOBILE = 30;
 const BULLET_SPEED = 200;
 const BULLET_LIFESPAN_MS = 5000;
-const INTERPOLATION_FACTOR = 0.1;
+const INTERPOLATION_FACTOR = 0.075;
 const TERRAIN_COLLISION_GEOMETRY = new THREE.BoxGeometry(1.5, 1.2, 4);
 const BULLET_COLLISION_GEOMETRY = new THREE.BoxGeometry(8, 2, 4);
 const OFFLINE_SPAWN_POS = new THREE.Vector3(200, 50, 200);
 
-// New Mobile control constants
-const YAW_SPEED_MOBILE = 2.0;
-const VERTICAL_SPEED_MOBILE = 30;
-
 
 const createVoxelPlane = (color: THREE.ColorRepresentation) => {
     const plane = new THREE.Group();
+    const visualGroup = new THREE.Group();
+    plane.add(visualGroup);
+    
     const bodyMat = new THREE.MeshLambertMaterial({ color, flatShading: true });
     
     const body = new THREE.Mesh(new THREE.BoxGeometry(1.5, 1, 4), bodyMat);
-    plane.add(body);
+    visualGroup.add(body);
 
     const wings = new THREE.Mesh(new THREE.BoxGeometry(8, 0.4, 1.5), bodyMat);
     wings.position.y = 0.2;
-    plane.add(wings);
+    visualGroup.add(wings);
     
     const tail = new THREE.Mesh(new THREE.BoxGeometry(3, 0.2, 1), bodyMat);
     tail.position.set(0, 0.2, -2.5);
-    plane.add(tail);
+    visualGroup.add(tail);
     
     const cockpitGeo = new THREE.BoxGeometry(0.8, 0.6, 1);
     const cockpitMat = new THREE.MeshLambertMaterial({ color: 0x000000, flatShading: true });
     const cockpit = new THREE.Mesh(cockpitGeo, cockpitMat);
     cockpit.position.set(0, 0.8, -0.5);
-    plane.add(cockpit);
+    visualGroup.add(cockpit);
 
     return plane;
 };
@@ -218,7 +218,7 @@ export default function Game({ mode, playerName: playerNameProp }: GameProps) {
     const [playerHealth, setPlayerHealth] = useState(100);
     const [altitude, setAltitude] = useState(0);
     const [gunOverheat, setGunOverheat] = useState(0);
-    const { onScreenControls } = useSettings();
+    const { onScreenControls, controlStyle } = useSettings();
     const isMobile = useIsMobile();
     
     const [showAltitudeWarning, setShowAltitudeWarning] = useState(false);
@@ -240,7 +240,9 @@ export default function Game({ mode, playerName: playerNameProp }: GameProps) {
         playerState.health = 100;
         playerState.gunCooldown = 0;
         playerState.gunOverheat = 0;
+        
         setPlayerHealth(100);
+        setGunOverheat(0);
         setScore(0);
         setWave(1);
 
@@ -423,7 +425,7 @@ export default function Game({ mode, playerName: playerNameProp }: GameProps) {
                     const protocol = window.location.protocol === "https:" ? "wss" : "ws";
                     const endpoint = `${protocol}://${window.location.host}`;
                     client = new Colyseus.Client(endpoint);
-                    const room = await client.joinOrCreate<VoxelAcesState>("voxel_aces_room", { playerName: playerNameProp });
+                    const room = await client.joinOrCreate<VoxelAcesState>("voxel_aces_room", { playerName: playerNameProp, controlStyle });
                     roomRef.current = room;
                     setGameStatus('playing');
                     isConnectingRef.current = false;
@@ -487,20 +489,35 @@ export default function Game({ mode, playerName: playerNameProp }: GameProps) {
                 if (gameStatusRef.current !== 'playing') { renderer.render(scene, camera); return; }
                 
                 let myPlane: THREE.Group | null = null;
+                const myControlStyle = (onScreenControls && isMobile) ? 'arcade' : controlStyle;
                 
                 if (mode === 'offline') {
                     myPlane = localPlanes['offline_player'];
                     const playerState = offlinePlayerRef.current;
+                    const visualGroup = myPlane?.children[0] as THREE.Group;
 
-                    if (onScreenControls && isMobile) {
-                        playerState.quaternion.multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), -YAW_SPEED_MOBILE * joystickInput.current.x * delta));
-                        playerState.position.y -= joystickInput.current.y * VERTICAL_SPEED_MOBILE * delta;
-                    } else {
-                        const input = { w: !!keysPressed.current['w'], s: !!keysPressed.current['s'], a: !!keysPressed.current['a'], d: !!keysPressed.current['d'] };
-                        if (input.w) playerState.quaternion.multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), -PITCH_SPEED * delta));
-                        if (input.s) playerState.quaternion.multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), PITCH_SPEED * delta));
-                        if (input.a) playerState.quaternion.multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 0, 1), ROLL_SPEED * delta));
-                        if (input.d) playerState.quaternion.multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 0, 1), -ROLL_SPEED * delta));
+                    if (myControlStyle === 'arcade') {
+                         const joystick = { ...joystickInput.current }; // copy to modify
+                         if (keysPressed.current['a']) joystick.x = -1;
+                         else if (keysPressed.current['d']) joystick.x = 1;
+
+                         if (keysPressed.current['w']) joystick.y = -1;
+                         else if (keysPressed.current['s']) joystick.y = 1;
+
+                         playerState.quaternion.multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), -YAW_SPEED_MOBILE * joystick.x * delta));
+                         playerState.position.y -= joystick.y * VERTICAL_SPEED_MOBILE * delta;
+                         
+                         const targetRoll = -ROLL_SPEED * joystick.x * 0.5;
+                         const targetPitch = PITCH_SPEED * joystick.y * 0.3;
+                         const visualEuler = new THREE.Euler(targetPitch, 0, targetRoll, 'XYZ');
+                         const visualQuaternion = new THREE.Quaternion().setFromEuler(visualEuler);
+                         if (visualGroup) visualGroup.quaternion.slerp(visualQuaternion, 0.1);
+                    } else { // 'realistic'
+                        if (keysPressed.current['w']) playerState.quaternion.multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), -PITCH_SPEED * delta));
+                        if (keysPressed.current['s']) playerState.quaternion.multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), PITCH_SPEED * delta));
+                        if (keysPressed.current['a']) playerState.quaternion.multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 0, 1), ROLL_SPEED * delta));
+                        if (keysPressed.current['d']) playerState.quaternion.multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 0, 1), -ROLL_SPEED * delta));
+                        if (visualGroup) visualGroup.quaternion.slerp(new THREE.Quaternion(), 0.1);
                     }
                     
                     const speed = keysPressed.current['shift'] ? BASE_SPEED * BOOST_MULTIPLIER : BASE_SPEED;
@@ -545,7 +562,7 @@ export default function Game({ mode, playerName: playerNameProp }: GameProps) {
                         const terrainHitboxMesh = new THREE.Mesh(TERRAIN_COLLISION_GEOMETRY);
                         terrainHitboxMesh.position.copy(myPlane.position);
                         terrainHitboxMesh.quaternion.copy(myPlane.quaternion);
-                        const playerHitbox = createScaledBox(terrainHitboxMesh, 1);
+                        const playerHitbox = createScaledBox(terrainHitboxMesh, 0.8);
                         
                         for (const obstacle of collidableObjects) { if (playerHitbox.intersectsBox(obstacle)) { hasCrashed = true; break; } }
                         if (boundaryWarningTimerRef.current <= 0 || altitudeWarningTimerRef.current <= 0) { hasCrashed = true; }
@@ -610,7 +627,7 @@ export default function Game({ mode, playerName: playerNameProp }: GameProps) {
             if(mountRef.current && renderer.domElement && mountRef.current.contains(renderer.domElement)) { mountRef.current.removeChild(renderer.domElement); }
             renderer.dispose(); scene.clear();
         };
-    }, [mode, playerNameProp, router, handlePlayAgain, onScreenControls, isMobile, resetOfflineGame]);
+    }, [mode, playerNameProp, router, onScreenControls, isMobile, controlStyle, handlePlayAgain, resetOfflineGame]);
 
 
     return (

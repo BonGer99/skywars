@@ -1,4 +1,3 @@
-
 import { Room, Client } from "@colyseus/core";
 import { VoxelAcesState, Player, Bullet } from "./state/VoxelAcesState";
 import * as THREE from 'three';
@@ -7,22 +6,21 @@ import * as THREE from 'three';
 const WORLD_SEED = 12345;
 const BASE_SPEED = 60;
 const BOOST_MULTIPLIER = 2.0;
-const PITCH_SPEED = 2.5; 
-const ROLL_SPEED = 2.5;
+const PITCH_SPEED = 2.0; 
+const ROLL_SPEED = 2.0;
 const MAX_ALTITUDE = 220;
 const BOUNDARY = 950;
 const GROUND_Y = -50;
 const BULLET_SPEED = 200;
 const BULLET_LIFESPAN_MS = 5000;
 const PLAYER_HEALTH = 100;
-
-// New Mobile control constants
 const YAW_SPEED_MOBILE = 2.0;
 const VERTICAL_SPEED_MOBILE = 30;
 
-// Use different geometries for more precise collision detection
-const TERRAIN_COLLISION_GEOMETRY = new THREE.BoxGeometry(1.5, 1.2, 4); // Tighter box for terrain
-const BULLET_COLLISION_GEOMETRY = new THREE.BoxGeometry(8, 2, 4);   // Larger, forgiving box for bullets
+const TERRAIN_COLLISION_GEOMETRY = new THREE.BoxGeometry(1.5, 1.2, 4);
+const BULLET_COLLISION_GEOMETRY = new THREE.BoxGeometry(8, 2, 4);
+
+type ControlStyle = 'realistic' | 'arcade';
 
 interface ServerPlayerData {
     position: THREE.Vector3;
@@ -32,6 +30,7 @@ interface ServerPlayerData {
     gunOverheat: number;
     boundaryTimer: number;
     altitudeTimer: number;
+    controlStyle: ControlStyle;
 }
 
 export class VoxelAcesRoom extends Room<VoxelAcesState> {
@@ -41,7 +40,6 @@ export class VoxelAcesRoom extends Room<VoxelAcesState> {
     serverBullets: Map<string, { position: THREE.Vector3, velocity: THREE.Vector3, spawnTime: number, ownerId: string }> = new Map();
     collidableObjects: THREE.Box3[] = [];
 
-    // Helper to create a smaller, scaled hitbox for terrain
     createScaledBox(mesh: THREE.Mesh, scale: number): THREE.Box3 {
         mesh.updateMatrixWorld();
         const box = new THREE.Box3().setFromObject(mesh);
@@ -103,7 +101,6 @@ export class VoxelAcesRoom extends Room<VoxelAcesState> {
         );
         this.collidableObjects.push(groundBox);
 
-        // Generate mountains
         for (let i = 0; i < 20; i++) {
             const mountainPosX = (seededRandom() - 0.5) * 1800;
             const mountainPosZ = (seededRandom() - 0.5) * 1800;
@@ -114,7 +111,6 @@ export class VoxelAcesRoom extends Room<VoxelAcesState> {
             for (let j = 0; j < layers; j++) {
                 const height = seededRandom() * 30 + 20;
                 const radius = baseRadius * ((layers - j) / layers);
-                
                 const geo = new THREE.CylinderGeometry(radius * 0.7, radius, height, 8);
                 const mesh = new THREE.Mesh(geo);
                 mesh.position.set(mountainPosX, currentY + height / 2, mountainPosZ);
@@ -123,16 +119,13 @@ export class VoxelAcesRoom extends Room<VoxelAcesState> {
             }
         }
 
-        // Generate trees
         for (let i = 0; i < 50; i++) {
             const treeX = (seededRandom() - 0.5) * 1800;
             const treeZ = (seededRandom() - 0.5) * 1800;
-
             const trunkGeo = new THREE.CylinderGeometry(1, 1, 10, 6);
             const trunkMesh = new THREE.Mesh(trunkGeo);
             trunkMesh.position.set(treeX, GROUND_Y + 5, treeZ);
             this.collidableObjects.push(this.createScaledBox(trunkMesh, 0.8));
-
             const leavesGeo = new THREE.ConeGeometry(5, 15, 8);
             const leavesMesh = new THREE.Mesh(leavesGeo);
             leavesMesh.position.set(treeX, GROUND_Y + 15, treeZ);
@@ -142,7 +135,7 @@ export class VoxelAcesRoom extends Room<VoxelAcesState> {
 
 
     onJoin(client: Client, options: any) {
-        console.log(client.sessionId, "joined!");
+        console.log(client.sessionId, "joined with options:", options);
         
         const player = new Player();
         player.name = options.playerName || "Pilot";
@@ -162,6 +155,7 @@ export class VoxelAcesRoom extends Room<VoxelAcesState> {
             gunOverheat: 0,
             boundaryTimer: 7,
             altitudeTimer: 5,
+            controlStyle: options.controlStyle || 'realistic',
         });
     }
 
@@ -178,20 +172,23 @@ export class VoxelAcesRoom extends Room<VoxelAcesState> {
     update(delta: number) {
         const now = Date.now();
 
-        // Update players
         this.state.players.forEach((player, sessionId) => {
             const serverPlayer = this.serverPlayers.get(sessionId);
             if (!serverPlayer || player.health <= 0) return;
 
             const input = serverPlayer.input || {};
-
-            // Determine control scheme
-            if (input.joystick) {
-                // Mobile Arcade Controls
-                serverPlayer.quaternion.multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), -YAW_SPEED_MOBILE * input.joystick.x * delta));
-                serverPlayer.position.y -= input.joystick.y * VERTICAL_SPEED_MOBILE * delta;
-            } else {
-                // PC Roll/Pitch Controls
+            const controlStyle = input.joystick ? 'arcade' : serverPlayer.controlStyle;
+            
+            if (controlStyle === 'arcade') {
+                 const joystick = input.joystick || { x: 0, y: 0 };
+                 if (input.a) joystick.x = -1;
+                 if (input.d) joystick.x = 1;
+                 if (input.w) joystick.y = -1;
+                 if (input.s) joystick.y = 1;
+ 
+                 serverPlayer.quaternion.multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), -YAW_SPEED_MOBILE * joystick.x * delta));
+                 serverPlayer.position.y -= joystick.y * VERTICAL_SPEED_MOBILE * delta;
+            } else { // 'realistic'
                 if (input.w) serverPlayer.quaternion.multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), -PITCH_SPEED * delta));
                 if (input.s) serverPlayer.quaternion.multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), PITCH_SPEED * delta));
                 if (input.a) serverPlayer.quaternion.multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 0, 1), ROLL_SPEED * delta));
@@ -210,7 +207,6 @@ export class VoxelAcesRoom extends Room<VoxelAcesState> {
             player.qz = serverPlayer.quaternion.z;
             player.qw = serverPlayer.quaternion.w;
 
-            // Shooting logic
             serverPlayer.gunCooldown = Math.max(0, serverPlayer.gunCooldown - delta);
             serverPlayer.gunOverheat = Math.max(0, serverPlayer.gunOverheat - 15 * delta);
             player.gunOverheat = serverPlayer.gunOverheat;
@@ -237,27 +233,19 @@ export class VoxelAcesRoom extends Room<VoxelAcesState> {
                 });
             }
             
-            // Authoritative Boundary & Altitude Checks
             const inBoundaryViolation = Math.abs(player.x) > BOUNDARY || Math.abs(player.z) > BOUNDARY;
             const inAltitudeViolation = player.y > MAX_ALTITUDE;
 
-            if (inBoundaryViolation) {
-                serverPlayer.boundaryTimer = Math.max(0, serverPlayer.boundaryTimer - delta);
-            } else {
-                serverPlayer.boundaryTimer = 7;
-            }
+            if (inBoundaryViolation) serverPlayer.boundaryTimer = Math.max(0, serverPlayer.boundaryTimer - delta);
+            else serverPlayer.boundaryTimer = 7;
+            
+            if (inAltitudeViolation) serverPlayer.altitudeTimer = Math.max(0, serverPlayer.altitudeTimer - delta);
+            else serverPlayer.altitudeTimer = 5;
 
-            if (inAltitudeViolation) {
-                serverPlayer.altitudeTimer = Math.max(0, serverPlayer.altitudeTimer - delta);
-            } else {
-                serverPlayer.altitudeTimer = 5;
-            }
-
-            // Authoritative Terrain Collision Checks (using the tighter hitbox)
             const terrainHitboxMesh = new THREE.Mesh(TERRAIN_COLLISION_GEOMETRY);
             terrainHitboxMesh.position.copy(serverPlayer.position);
             terrainHitboxMesh.quaternion.copy(serverPlayer.quaternion);
-            const playerTerrainHitbox = this.createScaledBox(terrainHitboxMesh, 1.0);
+            const playerTerrainHitbox = this.createScaledBox(terrainHitboxMesh, 0.8);
             
             let hasCrashed = false;
             for (const obstacle of this.collidableObjects) {
@@ -272,7 +260,6 @@ export class VoxelAcesRoom extends Room<VoxelAcesState> {
             }
         });
 
-        // Update bullets and check collisions
         const playerHitboxes: Map<string, { hitbox: THREE.Box3, player: Player }> = new Map();
         this.state.players.forEach((p, id) => {
             const serverPlayer = this.serverPlayers.get(id);
@@ -301,7 +288,6 @@ export class VoxelAcesRoom extends Room<VoxelAcesState> {
                 return;
             }
 
-            // Bullet-Plane Collision detection (using the larger hitbox)
             for (const [targetId, targetData] of playerHitboxes.entries()) {
                 if (targetId === bullet.ownerId) continue;
                 
@@ -311,9 +297,7 @@ export class VoxelAcesRoom extends Room<VoxelAcesState> {
                     if (targetData.player.health <= 0) {
                         targetData.player.health = 0;
                         const shooter = this.state.players.get(bullet.ownerId);
-                        if (shooter) {
-                            shooter.kills++;
-                        }
+                        if (shooter) shooter.kills++;
                     }
 
                     this.serverBullets.delete(bulletId);

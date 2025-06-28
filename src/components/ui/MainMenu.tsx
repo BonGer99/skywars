@@ -3,11 +3,8 @@
 import Link from 'next/link';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { PlaneTakeoff, Settings, Users, Gamepad2 } from 'lucide-react';
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
-import { Label } from '@/components/ui/label';
-import { Switch } from '@/components/ui/switch';
-import { useSettings } from '@/context/SettingsContext';
+import { PlaneTakeoff, Settings, Users } from 'lucide-react';
+import { SettingsDialog } from '@/components/ui/SettingsDialog';
 
 
 const HangarIcon = () => (
@@ -20,8 +17,6 @@ const HangarIcon = () => (
 
 
 export default function MainMenu() {
-  const { onScreenControls, setOnScreenControls } = useSettings();
-
   return (
     <div className="text-center">
       <h1 className="text-6xl md:text-8xl font-headline font-bold text-primary mb-4 drop-shadow-lg">
@@ -53,35 +48,12 @@ export default function MainMenu() {
             </div>
             Hangar
           </Button>
-           <Dialog>
-            <DialogTrigger asChild>
+           <SettingsDialog>
               <Button className="w-full text-lg py-6" size="lg" variant="secondary">
                 <Settings className="mr-2 h-6 w-6" />
                 Settings
               </Button>
-            </DialogTrigger>
-            <DialogContent className="sm:max-w-[425px]">
-              <DialogHeader>
-                <DialogTitle>Game Settings</DialogTitle>
-              </DialogHeader>
-              <div className="grid gap-4 py-4">
-                <div className="flex items-center space-x-4 rounded-md border p-4">
-                    <Gamepad2 />
-                    <div className="flex-1 space-y-1">
-                       <Label htmlFor="on-screen-controls" className="text-base">On-Screen Controls</Label>
-                        <p className="text-sm text-muted-foreground">
-                            Enable virtual joystick and buttons for touch devices.
-                        </p>
-                    </div>
-                    <Switch
-                        id="on-screen-controls"
-                        checked={onScreenControls}
-                        onCheckedChange={setOnScreenControls}
-                    />
-                </div>
-              </div>
-            </DialogContent>
-          </Dialog>
+          </SettingsDialog>
         </CardContent>
       </Card>
     </div>
