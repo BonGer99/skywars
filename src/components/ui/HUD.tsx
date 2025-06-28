@@ -4,6 +4,9 @@ import { Progress } from '@/components/ui/progress';
 import ServerLeaderboard from './ServerLeaderboard';
 import type { MapSchema } from '@colyseus/schema';
 import type { Player } from '@/server/rooms/state/VoxelAcesState';
+import { useIsMobile } from '@/hooks/use-is-mobile';
+import { Plus, Flame, ArrowUp, Star, Users } from 'lucide-react';
+
 
 interface HUDProps {
   score: number;
@@ -16,6 +19,51 @@ interface HUDProps {
 }
 
 export default function HUD({ score, wave, health, overheat, altitude, mode, players }: HUDProps) {
+  const isMobile = useIsMobile();
+
+  if (isMobile) {
+    return (
+      <div className="absolute top-0 left-0 right-0 p-2 text-white font-headline pointer-events-none select-none bg-black/20 backdrop-blur-sm z-10">
+        <div className="flex justify-between items-center text-sm">
+          {/* Left Stats */}
+          <div className="flex items-center gap-3">
+            <div className="flex items-center gap-1">
+              <Plus className="h-4 w-4 text-green-400" />
+              <span>{health}</span>
+            </div>
+            <div className="flex items-center gap-1">
+              <Flame className="h-4 w-4 text-orange-400" />
+              <span>{Math.round(overheat)}</span>
+            </div>
+            <div className="flex items-center gap-1">
+              <ArrowUp className="h-4 w-4" />
+              <span>{Math.round(altitude)}m</span>
+            </div>
+          </div>
+
+          {/* Right Stats */}
+          <div className="flex items-center gap-3">
+            <div className="flex items-center gap-1">
+              <Star className="h-4 w-4 text-yellow-400" />
+              <span>{score}</span>
+            </div>
+            {mode === 'online' ? (
+                <div className="flex items-center gap-1">
+                    <Users className="h-4 w-4" />
+                    <span>{players?.size || 1}</span>
+                </div>
+            ) : (
+                <div className="flex items-center gap-1">
+                    <Users className="h-4 w-4" />
+                    <span>WAVE: {wave}</span>
+                </div>
+            )}
+           </div>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="absolute top-4 left-4 right-4 text-white font-headline pointer-events-none select-none">
       <div className="flex justify-between items-start">

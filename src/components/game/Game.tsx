@@ -8,7 +8,7 @@ import { useRouter } from 'next/navigation';
 import HUD from '@/components/ui/HUD';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { Loader2, Home, ArrowUp, ArrowDown, ArrowLeft, ArrowRight, LocateFixed, FastForward } from 'lucide-react';
+import { Loader2, Home, LocateFixed, FastForward } from 'lucide-react';
 import type { VoxelAcesState, Player } from '@/server/rooms/state/VoxelAcesState';
 import { useSettings } from '@/context/SettingsContext';
 import { useIsMobile } from '@/hooks/use-is-mobile';
@@ -26,6 +26,7 @@ const BULLET_SPEED = 200;
 const BULLET_LIFESPAN_MS = 5000;
 const INTERPOLATION_FACTOR = 0.15;
 const TERRAIN_COLLISION_GEOMETRY = new THREE.BoxGeometry(1.5, 1.2, 4);
+const BULLET_COLLISION_GEOMETRY = new THREE.BoxGeometry(8, 2, 4);
 
 const createVoxelPlane = (color: THREE.ColorRepresentation) => {
     const plane = new THREE.Group();
@@ -51,42 +52,107 @@ const createVoxelPlane = (color: THREE.ColorRepresentation) => {
     return plane;
 };
 
+
 const OnScreenControls = ({ keysPressed }: { keysPressed: React.MutableRefObject<Record<string, boolean>> }) => {
-    
-  const handleTouch = (key: string, isPressed: boolean) => (event: React.TouchEvent) => {
-    event.preventDefault();
-    keysPressed.current[key] = isPressed;
-  };
+    const [joystick, setJoystick] = useState<{
+        active: boolean;
+        base: { x: number; y: number };
+        stick: { x: number; y: number };
+    } | null>(null);
 
-  return (
-    <div className="fixed inset-0 z-30 pointer-events-none text-white select-none">
-        {/* Movement Controls (Bottom Left) */}
-        <div className="absolute bottom-8 left-8 grid grid-cols-3 grid-rows-3 gap-2 pointer-events-auto">
-            <div />
-            <button onTouchStart={handleTouch('w', true)} onTouchEnd={handleTouch('w', false)} className="col-start-2 row-start-1 bg-black/40 rounded-full w-16 h-16 flex items-center justify-center backdrop-blur-sm active:bg-black/60"><ArrowUp size={32} /></button>
-            <div />
+    const joystickZoneRef = useRef<HTMLDivElement>(null);
 
-            <button onTouchStart={handleTouch('a', true)} onTouchEnd={handleTouch('a', false)} className="col-start-1 row-start-2 bg-black/40 rounded-full w-16 h-16 flex items-center justify-center backdrop-blur-sm active:bg-black/60"><ArrowLeft size={32} /></button>
-            <div />
-            <button onTouchStart={handleTouch('d', true)} onTouchEnd={handleTouch('d', false)} className="col-start-3 row-start-2 bg-black/40 rounded-full w-16 h-16 flex items-center justify-center backdrop-blur-sm active:bg-black/60"><ArrowRight size={32} /></button>
+    const handleJoystickStart = (e: React.TouchEvent<HTMLDivElement>) => {
+        const touch = e.touches[0];
+        e.preventDefault();
+        setJoystick({
+            active: true,
+            base: { x: touch.clientX, y: touch.clientY },
+            stick: { x: touch.clientX, y: touch.clientY },
+        });
+    };
+
+    const handleJoystickMove = (e: React.TouchEvent<HTMLDivElement>) => {
+        if (joystick?.active) {
+            e.preventDefault();
+            const touch = e.touches[0];
+            const maxDistance = 60;
+            const deltaX = touch.clientX - joystick.base.x;
+            const deltaY = touch.clientY - joystick.base.y;
+            const distance = Math.sqrt(deltaX * deltaX + deltaY * deltaY);
+            const angle = Math.atan2(deltaY, deltaX);
+
+            const stickDistance = Math.min(distance, maxDistance);
+            const stickX = joystick.base.x + stickDistance * Math.cos(angle);
+            const stickY = joystick.base.y + stickDistance * Math.sin(angle);
+
+            setJoystick({ ...joystick, stick: { x: stickX, y: stickY } });
+
+            const deadzone = 0.2;
+            const inputX = (stickX - joystick.base.x) / maxDistance;
+            const inputY = (stickY - joystick.base.y) / maxDistance;
+
+            keysPressed.current['w'] = inputY < -deadzone;
+            keysPressed.current['s'] = inputY > deadzone;
+            keysPressed.current['a'] = inputX < -deadzone;
+            keysPressed.current['d'] = inputX > deadzone;
+        }
+    };
+
+    const handleJoystickEnd = (e: React.TouchEvent<HTMLDivElement>) => {
+        if (joystick?.active) {
+            e.preventDefault();
+            setJoystick(null);
+            keysPressed.current['w'] = false;
+            keysPressed.current['s'] = false;
+            keysPressed.current['a'] = false;
+            keysPressed.current['d'] = false;
+        }
+    };
+
+    const handleActionTouch = (key: string, isPressed: boolean) => (event: React.TouchEvent) => {
+        event.preventDefault();
+        keysPressed.current[key] = isPressed;
+    };
+
+    return (
+        <div className="fixed inset-0 z-30 pointer-events-none text-white select-none">
+            {/* Joystick Control Zone (Left half) */}
+            <div
+                ref={joystickZoneRef}
+                className="absolute top-0 left-0 w-1/2 h-full pointer-events-auto"
+                onTouchStart={handleJoystickStart}
+                onTouchMove={handleJoystickMove}
+                onTouchEnd={handleJoystickEnd}
+            />
             
-            <div />
-            <button onTouchStart={handleTouch('s', true)} onTouchEnd={handleTouch('s', false)} className="col-start-2 row-start-3 bg-black/40 rounded-full w-16 h-16 flex items-center justify-center backdrop-blur-sm active:bg-black/60"><ArrowDown size={32} /></button>
-            <div />
-        </div>
+            {/* Joystick Visuals */}
+            {joystick?.active && (
+                <div className="fixed inset-0 z-30 pointer-events-none">
+                    <div
+                        className="absolute bg-black/30 rounded-full w-32 h-32 backdrop-blur-sm"
+                        style={{ left: joystick.base.x - 64, top: joystick.base.y - 64 }}
+                    />
+                    <div
+                        className="absolute bg-black/50 rounded-full w-16 h-16 border-2 border-white/50"
+                        style={{ left: joystick.stick.x - 32, top: joystick.stick.y - 32 }}
+                    />
+                </div>
+            )}
 
-        {/* Action Controls (Bottom Right) */}
-        <div className="absolute bottom-8 right-8 flex flex-col gap-4 items-center pointer-events-auto">
-             <button onTouchStart={handleTouch('shift', true)} onTouchEnd={handleTouch('shift', false)} className="bg-blue-600/60 rounded-full w-20 h-20 flex items-center justify-center backdrop-blur-sm active:bg-blue-600/80">
-                <FastForward size={32} />
-             </button>
-            <button onTouchStart={handleTouch('mouse0', true)} onTouchEnd={handleTouch('mouse0', false)} className="bg-red-600/60 rounded-full w-24 h-24 flex items-center justify-center backdrop-blur-sm active:bg-red-600/80">
-                 <LocateFixed size={40} />
-            </button>
+            {/* Action Controls (Bottom Right) */}
+            <div className="absolute bottom-8 right-8 flex flex-col gap-4 items-center pointer-events-auto z-40">
+                 <button onTouchStart={handleActionTouch('shift', true)} onTouchEnd={handleActionTouch('shift', false)} className="bg-blue-600/60 rounded-full w-20 h-20 flex items-center justify-center backdrop-blur-sm active:bg-blue-600/80">
+                    <FastForward size={32} />
+                 </button>
+                <button onTouchStart={handleActionTouch('mouse0', true)} onTouchEnd={handleActionTouch('mouse0', false)} className="bg-red-600/60 rounded-full w-24 h-24 flex items-center justify-center backdrop-blur-sm active:bg-red-600/80">
+                     <LocateFixed size={40} />
+                </button>
+            </div>
         </div>
-    </div>
-  );
+    );
 };
+
 
 type GameStatus = 'loading' | 'menu' | 'playing' | 'gameover';
 type GameMode = 'offline' | 'online';
@@ -109,7 +175,7 @@ export default function Game({ mode, playerName: playerNameProp }: GameProps) {
         _setGameStatus(status);
     }
     
-    const keysPressed = useRef<Record<string, boolean>>({}).current;
+    const keysPressed = useRef<Record<string, boolean>>({});
     
     // UI State
     const [score, setScore] = useState(0);
@@ -382,8 +448,8 @@ export default function Game({ mode, playerName: playerNameProp }: GameProps) {
                     inputInterval = setInterval(() => {
                         if (roomRef.current && gameStatusRef.current === 'playing') {
                             const playerInput = {
-                                w: !!keysPressed['w'], s: !!keysPressed['s'], a: !!keysPressed['a'], d: !!keysPressed['d'],
-                                shift: !!keysPressed['shift'], space: !!keysPressed[' '], mouse0: !!keysPressed['mouse0'],
+                                w: !!keysPressed.current['w'], s: !!keysPressed.current['s'], a: !!keysPressed.current['a'], d: !!keysPressed.current['d'],
+                                shift: !!keysPressed.current['shift'], space: !!keysPressed.current[' '], mouse0: !!keysPressed.current['mouse0'],
                             };
                             roomRef.current.send("input", playerInput);
                         }
@@ -397,10 +463,10 @@ export default function Game({ mode, playerName: playerNameProp }: GameProps) {
             }
             
             // ======== EVENT LISTENERS ========
-            const handleKeyDown = (e: KeyboardEvent) => { keysPressed[e.key.toLowerCase()] = true; };
-            const handleKeyUp = (e: KeyboardEvent) => { keysPressed[e.key.toLowerCase()] = false; };
-            const handleMouseDown = (e: MouseEvent) => { if(e.button === 0) keysPressed['mouse0'] = true; };
-            const handleMouseUp = (e: MouseEvent) => { if(e.button === 0) keysPressed['mouse0'] = false; };
+            const handleKeyDown = (e: KeyboardEvent) => { keysPressed.current[e.key.toLowerCase()] = true; };
+            const handleKeyUp = (e: KeyboardEvent) => { keysPressed.current[e.key.toLowerCase()] = false; };
+            const handleMouseDown = (e: MouseEvent) => { if(e.button === 0) keysPressed.current['mouse0'] = true; };
+            const handleMouseUp = (e: MouseEvent) => { if(e.button === 0) keysPressed.current['mouse0'] = false; };
             const handleResize = () => {
                 if (!mountRef.current) return;
                 camera.aspect = mountRef.current.clientWidth / mountRef.current.clientHeight;
@@ -434,8 +500,8 @@ export default function Game({ mode, playerName: playerNameProp }: GameProps) {
                     myPlane = localPlanes['offline_player'];
 
                     const input = {
-                        w: !!keysPressed['w'], s: !!keysPressed['s'], a: !!keysPressed['a'], d: !!keysPressed['d'],
-                        shift: !!keysPressed['shift'], space: !!keysPressed[' '], mouse0: !!keysPressed['mouse0'],
+                        w: !!keysPressed.current['w'], s: !!keysPressed.current['s'], a: !!keysPressed.current['a'], d: !!keysPressed.current['d'],
+                        shift: !!keysPressed.current['shift'], space: !!keysPressed.current[' '], mouse0: !!keysPressed.current['mouse0'],
                     };
 
                     if (input.w) offlinePlayer.quaternion.multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), -PITCH_SPEED * delta));
@@ -599,10 +665,10 @@ export default function Game({ mode, playerName: playerNameProp }: GameProps) {
             isConnectingRef.current = false;
             
             // Remove event listeners
-            window.removeEventListener('keydown', (e) => keysPressed[e.key.toLowerCase()] = true);
-            window.removeEventListener('keyup', (e) => keysPressed[e.key.toLowerCase()] = false);
-            window.removeEventListener('mousedown', (e) => { if(e.button === 0) keysPressed['mouse0'] = true; });
-            window.removeEventListener('mouseup', (e) => { if(e.button === 0) keysPressed['mouse0'] = false; });
+            window.removeEventListener('keydown', (e) => { keysPressed.current[e.key.toLowerCase()] = true; });
+            window.removeEventListener('keyup', (e) => { keysPressed.current[e.key.toLowerCase()] = false; });
+            window.removeEventListener('mousedown', (e) => { if(e.button === 0) keysPressed.current['mouse0'] = true; });
+            window.removeEventListener('mouseup', (e) => { if(e.button === 0) keysPressed.current['mouse0'] = false; });
             window.removeEventListener('resize', () => {});
 
 
@@ -624,7 +690,7 @@ export default function Game({ mode, playerName: playerNameProp }: GameProps) {
         <div className="relative w-screen h-screen bg-background overflow-hidden" onContextMenu={(e) => e.preventDefault()}>
             <div ref={mountRef} className="absolute top-0 left-0 w-full h-full" />
             
-            {onScreenControls && isMobile && _gameStatus === 'playing' && <OnScreenControls keysPressed={keysPressed} />}
+            {onScreenControls && isMobile && _gameStatus === 'playing' && <OnScreenControls keysPressed={keysPressed.current} />}
 
             <div 
                 className="absolute inset-0 bg-white z-10 pointer-events-none"
