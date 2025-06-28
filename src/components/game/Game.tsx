@@ -13,7 +13,7 @@ import { AlertDialog, AlertDialogTrigger, AlertDialogContent, AlertDialogHeader,
 import { Input } from '@/components/ui/input';
 import { useToast } from "@/hooks/use-toast";
 import { db } from '@/lib/firebase';
-import { doc, onSnapshot, collection, addDoc, serverTimestamp, deleteDoc, updateDoc, writeBatch } from 'firebase/firestore';
+import { doc, onSnapshot, collection, addDoc, serverTimestamp, deleteDoc, updateDoc, writeBatch, getDoc } from 'firebase/firestore';
 
 
 type GameState = 'loading' | 'menu' | 'playing' | 'gameover';
@@ -69,6 +69,9 @@ const createVoxelPlane = (color: THREE.Color) => {
     
     return plane;
 };
+
+const MAX_ALTITUDE = 220;
+const BOUNDARY = 950;
 
 
 export default function Game({ mode, serverId: serverIdProp, playerName: playerNameProp }: GameProps) {
@@ -192,6 +195,9 @@ export default function Game({ mode, serverId: serverIdProp, playerName: playerN
         const mount = mountRef.current;
         let animationFrameId: number;
         let isMounted = true;
+        let heartbeatInterval: NodeJS.Timeout;
+        let unsubPlayers: () => void;
+        let unsubBullets: () => void;
 
         // ---- 1. Synchronous Three.js Setup ----
         const scene = new THREE.Scene();
@@ -214,6 +220,7 @@ export default function Game({ mode, serverId: serverIdProp, playerName: playerN
             renderer.setSize(width, height);
         };
         handleResize();
+        window.addEventListener('resize', handleResize);
         
         const player = createVoxelPlane(new THREE.Color(0x0077ff));
         playerRef.current = player;
@@ -258,8 +265,6 @@ export default function Game({ mode, serverId: serverIdProp, playerName: playerN
         const keysPressed: Record<string, boolean> = {};
         let gunCooldown = 0;
         let lastTime = 0;
-        const BOUNDARY = 950;
-        const MAX_ALTITUDE = 220;
         
         const gameLoop = (time: number) => {
             if (!isMounted) return;
@@ -409,7 +414,6 @@ export default function Game({ mode, serverId: serverIdProp, playerName: playerN
         window.addEventListener('keyup', handleKeyUp);
         window.addEventListener('mousedown', handleMouseDown);
         window.addEventListener('mouseup', handleMouseUp);
-        window.addEventListener('resize', handleResize);
         
         // ---- 3. Asynchronous Game Initialization ----
         const initializeGame = async () => {
@@ -417,6 +421,7 @@ export default function Game({ mode, serverId: serverIdProp, playerName: playerN
             resetGame();
 
             if (mode === 'offline') {
+                playerIdRef.current = 'offline_player';
                 setGameState('menu');
             } else if (mode === 'online' && serverIdProp && playerNameProp) {
                 try {
@@ -433,11 +438,105 @@ export default function Game({ mode, serverId: serverIdProp, playerName: playerN
                     });
                     
                     playerIdRef.current = playerDocRef.id;
+
+                    // Setup Firestore Listeners after we have a player ID
+                    const playersCollectionRef = collection(db, 'servers', serverIdProp, 'players');
+                    unsubPlayers = onSnapshot(playersCollectionRef, (snapshot) => {
+                        if (!sceneRef.current || !playerRef.current) return;
+                        const scene = sceneRef.current;
+                        const myId = playerIdRef.current;
+                        const now = Date.now();
+                        const STALE_THRESHOLD_MS = 15000; 
+                        
+                        const currentPlayersOnScreen = { ...otherPlayersRef.current };
+                        const freshPlayerIds = new Set<string>();
+
+                        snapshot.forEach(docSnap => {
+                            const data = docSnap.data();
+                            const id = docSnap.id;
+
+                            if (id === myId) {
+                                if (playerHealth !== data.health) setPlayerHealth(data.health);
+                                if (data.health <= 0 && gameStateRef.current === 'playing') setGameState('gameover');
+                                if (score !== data.kills) setScore(data.kills);
+                                return;
+                            };
+
+                            const lastSeenTimestamp = data.lastSeen?.toDate()?.getTime();
+                            if (lastSeenTimestamp && (now - lastSeenTimestamp < STALE_THRESHOLD_MS)) {
+                                freshPlayerIds.add(id);
+                                let otherPlayer = currentPlayersOnScreen[id];
+
+                                if (!otherPlayer) {
+                                    const newPlayerPlane = createVoxelPlane(new THREE.Color(0xffaa00));
+                                    scene.add(newPlayerPlane);
+                                    otherPlayersRef.current[id] = { mesh: newPlayerPlane, name: data.name || 'Unknown', health: data.health || 100 };
+                                    otherPlayer = otherPlayersRef.current[id];
+                                }
+
+                                if (data.position) otherPlayer.mesh.position.lerp(new THREE.Vector3(data.position.x, data.position.y, data.position.z), 0.3);
+                                if (data.quaternion) otherPlayer.mesh.quaternion.slerp(new THREE.Quaternion(data.quaternion.x, data.quaternion.y, data.quaternion.z, data.quaternion.w), 0.3);
+                                otherPlayer.health = data.health;
+                            }
+                        });
+                        
+                        for (const id in currentPlayersOnScreen) {
+                            if (!freshPlayerIds.has(id)) {
+                                scene.remove(currentPlayersOnScreen[id].mesh);
+                                delete otherPlayersRef.current[id];
+                            }
+                        }
+                    });
+                    
+                    const bulletsCollectionRef = collection(db, 'servers', serverIdProp, 'bullets');
+                    unsubBullets = onSnapshot(bulletsCollectionRef, (snapshot) => {
+                         if (!sceneRef.current || !playerRef.current) return;
+                         const myId = playerIdRef.current;
+                         const batch = writeBatch(db);
+                         snapshot.docChanges().forEach(change => {
+                            if (change.type === 'added') {
+                                const bulletData = change.doc.data();
+                                const docId = change.doc.id;
+
+                                if (bulletData.ownerId === myId) return;
+
+                                const bulletGeo = new THREE.BoxGeometry(0.2, 0.2, 1);
+                                const bulletMat = new THREE.MeshBasicMaterial({ color: 0xffaa00 });
+                                const bulletMesh = new THREE.Mesh(bulletGeo, bulletMat);
+                                bulletMesh.position.set(bulletData.position.x, bulletData.position.y, bulletData.position.z);
+                                bulletMesh.quaternion.set(bulletData.quaternion.x, bulletData.quaternion.y, bulletData.quaternion.z, bulletData.quaternion.w);
+                                const velocity = new THREE.Vector3(0, 0, -200).applyQuaternion(bulletMesh.quaternion);
+                                
+                                bulletsRef.current.push({
+                                    id: docId,
+                                    mesh: bulletMesh,
+                                    velocity: velocity,
+                                    ownerId: bulletData.ownerId,
+                                    spawnTime: performance.now(),
+                                });
+                                sceneRef.current?.add(bulletMesh);
+                                
+                                batch.delete(doc(db, 'servers', serverIdProp, 'bullets', docId));
+                            }
+                         });
+                         if (!snapshot.empty) {
+                            batch.commit().catch(console.error);
+                         }
+                    });
+
+                    // Heartbeat
+                    heartbeatInterval = setInterval(() => {
+                        if (playerIdRef.current) {
+                            const playerDoc = doc(db, 'servers', serverIdProp, 'players', playerIdRef.current);
+                            updateDoc(playerDoc, { lastSeen: serverTimestamp() }).catch(console.error);
+                        }
+                    }, 10000);
+
+                    // Position player and camera correctly before starting
                     if (playerRef.current) {
                         playerRef.current.position.set(randomPos.x, randomPos.y, randomPos.z);
                         playerRef.current.quaternion.set(0, 0, 0, 1);
                     }
-                    
                     if (cameraRef.current && playerRef.current) {
                         const idealOffset = cameraOffsetRef.current.clone().applyQuaternion(playerRef.current.quaternion);
                         const idealPosition = playerRef.current.position.clone().add(idealOffset);
@@ -470,6 +569,10 @@ export default function Game({ mode, serverId: serverIdProp, playerName: playerN
             window.removeEventListener('mouseup', handleMouseUp);
             window.removeEventListener('resize', handleResize);
             
+            if (heartbeatInterval) clearInterval(heartbeatInterval);
+            if (unsubPlayers) unsubPlayers();
+            if (unsubBullets) unsubBullets();
+
             const pid = playerIdRef.current;
             if (mode === 'online' && serverIdProp && pid) {
                 deleteDoc(doc(db, 'servers', serverIdProp, 'players', pid)).catch(e => {
@@ -481,112 +584,8 @@ export default function Game({ mode, serverId: serverIdProp, playerName: playerN
                 mountRef.current.removeChild(renderer.domElement);
             }
         };
-    }, []);
+    }, [mode, serverIdProp, playerNameProp, router, toast, resetGame]);
 
-    // ---- FIRESTORE LISTENERS ----
-    useEffect(() => {
-        if (mode !== 'online' || !serverIdProp) return;
-
-        let heartbeatInterval: NodeJS.Timeout;
-        if (playerIdRef.current) {
-            heartbeatInterval = setInterval(() => {
-                if (playerIdRef.current) {
-                    const playerDocRef = doc(db, 'servers', serverIdProp, 'players', playerIdRef.current);
-                    updateDoc(playerDocRef, { lastSeen: serverTimestamp() }).catch(console.error);
-                }
-            }, 10000);
-        }
-
-        const playersCollectionRef = collection(db, 'servers', serverIdProp, 'players');
-        const unsubPlayers = onSnapshot(playersCollectionRef, (snapshot) => {
-            if (!sceneRef.current || !playerRef.current) return;
-            const scene = sceneRef.current;
-            const myId = playerIdRef.current;
-            const now = Date.now();
-            const STALE_THRESHOLD_MS = 15000; 
-            
-            const currentPlayersOnScreen = { ...otherPlayersRef.current };
-            const freshPlayerIds = new Set<string>();
-
-            snapshot.forEach(docSnap => {
-                const data = docSnap.data();
-                const id = docSnap.id;
-
-                if (id === myId) {
-                    if (playerHealth !== data.health) setPlayerHealth(data.health);
-                    if (data.health <= 0 && gameStateRef.current === 'playing') setGameState('gameover');
-                    if (score !== data.kills) setScore(data.kills);
-                    return;
-                };
-
-                const lastSeenTimestamp = data.lastSeen?.toDate()?.getTime();
-                if (lastSeenTimestamp && (now - lastSeenTimestamp < STALE_THRESHOLD_MS)) {
-                    freshPlayerIds.add(id);
-                    let otherPlayer = currentPlayersOnScreen[id];
-
-                    if (!otherPlayer) {
-                        const newPlayerPlane = createVoxelPlane(new THREE.Color(0xffaa00));
-                        scene.add(newPlayerPlane);
-                        otherPlayersRef.current[id] = { mesh: newPlayerPlane, name: data.name || 'Unknown', health: data.health || 100 };
-                        otherPlayer = otherPlayersRef.current[id];
-                    }
-
-                    if (data.position) otherPlayer.mesh.position.lerp(new THREE.Vector3(data.position.x, data.position.y, data.position.z), 0.3);
-                    if (data.quaternion) otherPlayer.mesh.quaternion.slerp(new THREE.Quaternion(data.quaternion.x, data.quaternion.y, data.quaternion.z, data.quaternion.w), 0.3);
-                    otherPlayer.health = data.health;
-                }
-            });
-            
-            for (const id in currentPlayersOnScreen) {
-                if (!freshPlayerIds.has(id)) {
-                    scene.remove(currentPlayersOnScreen[id].mesh);
-                    delete otherPlayersRef.current[id];
-                }
-            }
-        });
-        
-        const bulletsCollectionRef = collection(db, 'servers', serverIdProp, 'bullets');
-        const unsubBullets = onSnapshot(bulletsCollectionRef, (snapshot) => {
-             if (!sceneRef.current || !playerRef.current) return;
-             const myId = playerIdRef.current;
-             const batch = writeBatch(db);
-             snapshot.docChanges().forEach(change => {
-                if (change.type === 'added') {
-                    const bulletData = change.doc.data();
-                    const docId = change.doc.id;
-
-                    if (bulletData.ownerId === myId) return;
-
-                    const bulletGeo = new THREE.BoxGeometry(0.2, 0.2, 1);
-                    const bulletMat = new THREE.MeshBasicMaterial({ color: 0xffaa00 });
-                    const bulletMesh = new THREE.Mesh(bulletGeo, bulletMat);
-                    bulletMesh.position.set(bulletData.position.x, bulletData.position.y, bulletData.position.z);
-                    bulletMesh.quaternion.set(bulletData.quaternion.x, bulletData.quaternion.y, bulletData.quaternion.z, bulletData.quaternion.w);
-                    const velocity = new THREE.Vector3(0, 0, -200).applyQuaternion(bulletMesh.quaternion);
-                    
-                    bulletsRef.current.push({
-                        id: docId,
-                        mesh: bulletMesh,
-                        velocity: velocity,
-                        ownerId: bulletData.ownerId,
-                        spawnTime: performance.now(),
-                    });
-                    sceneRef.current?.add(bulletMesh);
-                    
-                    batch.delete(doc(db, 'servers', serverIdProp, 'bullets', docId));
-                }
-             });
-             if (!snapshot.empty) {
-                batch.commit().catch(console.error);
-             }
-        });
-
-        return () => {
-            if (heartbeatInterval) clearInterval(heartbeatInterval);
-            unsubPlayers();
-            unsubBullets();
-        };
-    }, [mode, serverIdProp, playerHealth, score]);
 
     const inviteLink = serverIdProp ? `${typeof window !== 'undefined' ? window.location.origin : ''}/online` : '';
 
@@ -705,5 +704,3 @@ export default function Game({ mode, serverId: serverIdProp, playerName: playerN
         </div>
     );
 }
-
-    
