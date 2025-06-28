@@ -4,7 +4,7 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "nodemon",
+    "dev": "nodemon --watch src/server --ext ts --exec \"tsx src/server/index.ts\"",
     "build": "next build && tsc -p tsconfig.server.json",
     "start": "NODE_ENV=production node dist/server/index.js",
     "lint": "next lint",
