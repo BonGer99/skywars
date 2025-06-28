@@ -24,9 +24,15 @@ const PITCH_SPEED = 2.5;
 const ROLL_SPEED = 2.5;
 const BULLET_SPEED = 200;
 const BULLET_LIFESPAN_MS = 5000;
-const INTERPOLATION_FACTOR = 0.15;
+const INTERPOLATION_FACTOR = 0.1;
 const TERRAIN_COLLISION_GEOMETRY = new THREE.BoxGeometry(1.5, 1.2, 4);
 const BULLET_COLLISION_GEOMETRY = new THREE.BoxGeometry(8, 2, 4);
+const OFFLINE_SPAWN_POS = new THREE.Vector3(200, 50, 200);
+
+// New Mobile control constants
+const YAW_SPEED_MOBILE = 2.0;
+const VERTICAL_SPEED_MOBILE = 30;
+
 
 const createVoxelPlane = (color: THREE.ColorRepresentation) => {
     const plane = new THREE.Group();
@@ -53,7 +59,10 @@ const createVoxelPlane = (color: THREE.ColorRepresentation) => {
 };
 
 
-const OnScreenControls = ({ keysPressed }: { keysPressed: React.MutableRefObject<Record<string, boolean>> }) => {
+const OnScreenControls = ({ joystickInput, keysPressed }: {
+    joystickInput: React.MutableRefObject<{ x: number, y: number }>;
+    keysPressed: React.MutableRefObject<Record<string, boolean>> 
+}) => {
     const [joystick, setJoystick] = useState<{
         active: boolean;
         base: { x: number; y: number };
@@ -88,14 +97,14 @@ const OnScreenControls = ({ keysPressed }: { keysPressed: React.MutableRefObject
 
             setJoystick({ ...joystick, stick: { x: stickX, y: stickY } });
 
-            const deadzone = 0.2;
-            const inputX = (stickX - joystick.base.x) / maxDistance;
-            const inputY = (stickY - joystick.base.y) / maxDistance;
+            const deadzone = 0.1;
+            let inputX = (stickX - joystick.base.x) / maxDistance;
+            let inputY = (stickY - joystick.base.y) / maxDistance;
 
-            keysPressed.current['w'] = inputY < -deadzone;
-            keysPressed.current['s'] = inputY > deadzone;
-            keysPressed.current['a'] = inputX < -deadzone;
-            keysPressed.current['d'] = inputX > deadzone;
+            if (Math.abs(inputX) < deadzone) inputX = 0;
+            if (Math.abs(inputY) < deadzone) inputY = 0;
+            
+            joystickInput.current = { x: inputX, y: inputY };
         }
     };
 
@@ -103,10 +112,7 @@ const OnScreenControls = ({ keysPressed }: { keysPressed: React.MutableRefObject
         if (joystick?.active) {
             e.preventDefault();
             setJoystick(null);
-            keysPressed.current['w'] = false;
-            keysPressed.current['s'] = false;
-            keysPressed.current['a'] = false;
-            keysPressed.current['d'] = false;
+            joystickInput.current = { x: 0, y: 0 };
         }
     };
 
@@ -117,6 +123,20 @@ const OnScreenControls = ({ keysPressed }: { keysPressed: React.MutableRefObject
 
     return (
         <div className="fixed inset-0 z-30 pointer-events-none text-white select-none">
+            {/* Prevent browser default touch behaviors */}
+            <style jsx global>{`
+              body {
+                touch-action: none;
+                -webkit-touch-callout: none;
+                -webkit-user-select: none;
+                -khtml-user-select: none;
+                -moz-user-select: none;
+                -ms-user-select: none;
+                user-select: none;
+                overscroll-behavior: none;
+              }
+            `}</style>
+            
             {/* Joystick Control Zone (Left half) */}
             <div
                 ref={joystickZoneRef}
@@ -142,8 +162,8 @@ const OnScreenControls = ({ keysPressed }: { keysPressed: React.MutableRefObject
 
             {/* Action Controls (Bottom Right) */}
             <div className="absolute bottom-8 right-8 flex flex-col gap-4 items-center pointer-events-auto z-40">
-                <button onTouchStart={handleActionTouch('mouse0', true)} onTouchEnd={handleActionTouch('mouse0', false)} className="bg-red-600/60 rounded-full w-20 h-20 flex items-center justify-center backdrop-blur-sm active:bg-red-600/80">
-                     <LocateFixed size={32} />
+                <button onTouchStart={handleActionTouch('mouse0', true)} onTouchEnd={handleActionTouch('mouse0', false)} className="bg-red-600/60 rounded-full w-16 h-16 flex items-center justify-center backdrop-blur-sm active:bg-red-600/80">
+                     <LocateFixed size={28} />
                 </button>
             </div>
         </div>
@@ -173,6 +193,24 @@ export default function Game({ mode, playerName: playerNameProp }: GameProps) {
     }
     
     const keysPressed = useRef<Record<string, boolean>>({});
+    const joystickInput = useRef({ x: 0, y: 0 });
+
+    // Core game state refs
+    const sceneRef = useRef<THREE.Scene | null>(null);
+    const offlinePlayerRef = useRef({
+        position: new THREE.Vector3().copy(OFFLINE_SPAWN_POS),
+        quaternion: new THREE.Quaternion(),
+        gunCooldown: 0,
+        gunOverheat: 0,
+        health: 100
+    });
+    const localOfflineBulletsRef = useRef<{
+        id: string;
+        position: THREE.Vector3;
+        velocity: THREE.Vector3;
+        spawnTime: number;
+        mesh: THREE.Mesh;
+    }[]>([]);
     
     // UI State
     const [score, setScore] = useState(0);
@@ -183,13 +221,10 @@ export default function Game({ mode, playerName: playerNameProp }: GameProps) {
     const { onScreenControls } = useSettings();
     const isMobile = useIsMobile();
     
-    // Warning Timers (State for UI, Ref for logic)
     const [showAltitudeWarning, setShowAltitudeWarning] = useState(false);
-    const [altitudeWarningTimer, setAltitudeWarningTimer] = useState(5);
     const altitudeWarningTimerRef = useRef(5);
 
     const [showBoundaryWarning, setShowBoundaryWarning] = useState(false);
-    const [boundaryWarningTimer, setBoundaryWarningTimer] = useState(7);
     const boundaryWarningTimerRef = useRef(7);
     
     const [whiteoutOpacity, setWhiteoutOpacity] = useState(0);
@@ -197,6 +232,27 @@ export default function Game({ mode, playerName: playerNameProp }: GameProps) {
     const handleLeaveGame = useCallback(() => {
       router.push('/');
     }, [router]);
+
+    const resetOfflineGame = useCallback(() => {
+        const playerState = offlinePlayerRef.current;
+        playerState.position.copy(OFFLINE_SPAWN_POS);
+        playerState.quaternion.set(0, 0, 0, 1);
+        playerState.health = 100;
+        playerState.gunCooldown = 0;
+        playerState.gunOverheat = 0;
+        setPlayerHealth(100);
+        setScore(0);
+        setWave(1);
+
+        if (sceneRef.current) {
+            localOfflineBulletsRef.current.forEach(b => sceneRef.current!.remove(b.mesh));
+        }
+        localOfflineBulletsRef.current = [];
+        
+        altitudeWarningTimerRef.current = 5;
+        boundaryWarningTimerRef.current = 7;
+        setGameStatus('playing');
+    }, []);
 
     const handlePlayAgain = useCallback(() => {
         if (mode === 'online') {
@@ -208,22 +264,20 @@ export default function Game({ mode, playerName: playerNameProp }: GameProps) {
                 boundaryWarningTimerRef.current = 7;
             }
         } else {
-            router.push('/play?t=' + new Date().getTime());
+            resetOfflineGame();
         }
-    }, [mode, router]);
+    }, [mode, resetOfflineGame]);
 
-    // Helper to create a smaller, scaled hitbox for terrain
     const createScaledBox = (mesh: THREE.Mesh, scale: number): THREE.Box3 => {
+        mesh.updateMatrixWorld();
         const box = new THREE.Box3().setFromObject(mesh);
         const center = new THREE.Vector3();
         box.getCenter(center);
         const size = new THREE.Vector3();
         box.getSize(size);
         size.multiplyScalar(scale);
-        box.setFromCenterAndSize(center, size);
-        return box;
+        return new THREE.Box3().setFromCenterAndSize(center, size);
     };
-
 
     useEffect(() => {
         if (typeof window === 'undefined' || !mountRef.current) return;
@@ -234,6 +288,7 @@ export default function Game({ mode, playerName: playerNameProp }: GameProps) {
         let inputInterval: NodeJS.Timeout;
 
         const scene = new THREE.Scene();
+        sceneRef.current = scene;
         const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 4000);
         const renderer = new THREE.WebGLRenderer({ antialias: true });
 
@@ -241,18 +296,6 @@ export default function Game({ mode, playerName: playerNameProp }: GameProps) {
         const localBullets: Record<string, THREE.Mesh> = {};
         const collidableObjects: THREE.Box3[] = [];
 
-        // Offline state
-        const offlinePlayer = {
-            position: new THREE.Vector3(200, 50, 200),
-            quaternion: new THREE.Quaternion(),
-            gunCooldown: 0,
-            gunOverheat: 0,
-            health: 100
-        };
-        const localOfflineBullets: any[] = [];
-        const localOfflineBulletMeshes: Record<string, THREE.Mesh> = {};
-
-        // Seeded random for deterministic world generation
         let seed = WORLD_SEED;
         const seededRandom = () => {
             const x = Math.sin(seed++) * 10000;
@@ -263,7 +306,6 @@ export default function Game({ mode, playerName: playerNameProp }: GameProps) {
         const init = async () => {
             if (!isMounted || !mountRef.current) return;
 
-            // ======== 3D SCENE SETUP ========
             renderer.setPixelRatio(window.devicePixelRatio);
             renderer.setSize(mountRef.current.clientWidth, mountRef.current.clientHeight);
             mountRef.current.appendChild(renderer.domElement);
@@ -285,9 +327,7 @@ export default function Game({ mode, playerName: playerNameProp }: GameProps) {
             scene.add(ground);
             collidableObjects.push(new THREE.Box3().setFromObject(ground));
             
-            // Regenerate world with seed
             seed = WORLD_SEED; 
-            // Generate mountains
             for (let i = 0; i < 20; i++) {
                 const mountainPosX = (seededRandom() - 0.5) * 1800;
                 const mountainPosZ = (seededRandom() - 0.5) * 1800;
@@ -310,15 +350,14 @@ export default function Game({ mode, playerName: playerNameProp }: GameProps) {
                     currentY += height * 0.8;
                 }
             }
-             // Generate trees
             for (let i = 0; i < 50; i++) {
-                const trunkMat = new THREE.MeshLambertMaterial({ color: 0x8B4513, flatShading: true });
+                const treeMat = new THREE.MeshLambertMaterial({ color: 0x8B4513, flatShading: true });
                 const leavesMat = new THREE.MeshLambertMaterial({ color: 0x006400, flatShading: true });
                 const treeX = (seededRandom() - 0.5) * 1800;
                 const treeZ = (seededRandom() - 0.5) * 1800;
                 
                 const trunkGeo = new THREE.CylinderGeometry(1, 1, 10, 6);
-                const trunk = new THREE.Mesh(trunkGeo, trunkMat);
+                const trunk = new THREE.Mesh(trunkGeo, treeMat);
                 trunk.position.set(treeX, GROUND_Y + 5, treeZ);
                 scene.add(trunk);
                 collidableObjects.push(createScaledBox(trunk, 0.8));
@@ -329,7 +368,6 @@ export default function Game({ mode, playerName: playerNameProp }: GameProps) {
                 scene.add(leaves);
                 collidableObjects.push(createScaledBox(leaves, 0.8));
             }
-            // Generate lakes
             for (let i = 0; i < 15; i++) {
                 const lakeGeo = new THREE.CylinderGeometry(seededRandom() * 40 + 30, seededRandom() * 40 + 30, 0.5, 32);
                 const lakeMat = new THREE.MeshBasicMaterial({ color: 0x4682B4 });
@@ -337,27 +375,21 @@ export default function Game({ mode, playerName: playerNameProp }: GameProps) {
                 lake.position.set((seededRandom() - 0.5) * 1800, GROUND_Y + 0.26, (seededRandom() - 0.5) * 1800);
                 scene.add(lake);
             }
-            // Generate tanks
             for (let i = 0; i < 10; i++) {
                 const tank = new THREE.Group();
                 const mat = new THREE.MeshLambertMaterial({ color: 0x556B2F, flatShading: true });
-
                 const body = new THREE.Mesh(new THREE.BoxGeometry(8, 3, 5), mat);
                 tank.add(body);
-
                 const turret = new THREE.Mesh(new THREE.BoxGeometry(4, 2, 4), mat);
                 turret.position.y = 2.5;
                 tank.add(turret);
-
                 const barrel = new THREE.Mesh(new THREE.CylinderGeometry(0.5, 0.5, 5, 8), mat);
                 barrel.position.set(0, 2.5, -4.5);
                 barrel.rotation.x = Math.PI / 2;
                 tank.add(barrel);
-                
                 tank.position.set((seededRandom() - 0.5) * 1800, GROUND_Y + 1.5, (seededRandom() - 0.5) * 1800);
                 scene.add(tank);
             }
-
             const createCloud = () => {
                 const cloud = new THREE.Group();
                 const mat = new THREE.MeshBasicMaterial({ color: 0xffffff, opacity: 0.8, transparent: true });
@@ -377,51 +409,36 @@ export default function Game({ mode, playerName: playerNameProp }: GameProps) {
                 scene.add(cloud);
             }
 
-            // ======== OFFLINE SETUP ========
             if (mode === 'offline') {
                 const planeMesh = createVoxelPlane(0x0077ff);
-                planeMesh.position.copy(offlinePlayer.position);
+                planeMesh.position.copy(offlinePlayerRef.current.position);
                 localPlanes['offline_player'] = planeMesh;
                 scene.add(planeMesh);
             }
 
-            // ======== ONLINE SETUP ========
             if (mode === 'online') {
                 if (isConnectingRef.current) return;
                 isConnectingRef.current = true;
-
                 try {
                     const protocol = window.location.protocol === "https:" ? "wss" : "ws";
                     const endpoint = `${protocol}://${window.location.host}`;
                     client = new Colyseus.Client(endpoint);
-                    
                     const room = await client.joinOrCreate<VoxelAcesState>("voxel_aces_room", { playerName: playerNameProp });
                     roomRef.current = room;
-
                     setGameStatus('playing');
                     isConnectingRef.current = false;
-
-                    room.onLeave(() => {
-                        if (isMounted) {
-                           console.log("Disconnected from room.");
-                           setGameStatus('gameover');
-                        }
-                    });
-
+                    room.onLeave(() => { if (isMounted) { setGameStatus('gameover'); } });
                     room.state.players.onAdd((player, sessionId) => {
                         const isMe = sessionId === room?.sessionId;
                         const color = isMe ? 0x0077ff : 0xffaa00;
                         const planeMesh = createVoxelPlane(color);
-                        
                         planeMesh.position.set(player.x, player.y, player.z);
                         planeMesh.quaternion.set(player.qx, player.qy, player.qz, player.qw);
-                        
                         localPlanes[sessionId] = planeMesh;
                         scene.add(planeMesh);
-
                         if(isMe) {
                             player.listen("health", (currentValue) => {
-                                setPlayerHealth(currentValue)
+                                setPlayerHealth(currentValue);
                                 if (currentValue <= 0 && gameStatusRef.current === 'playing') {
                                     setGameStatus('gameover');
                                 }
@@ -430,14 +447,7 @@ export default function Game({ mode, playerName: playerNameProp }: GameProps) {
                             player.listen("gunOverheat", (currentValue) => setGunOverheat(currentValue));
                         }
                     });
-                    
-                    room.state.players.onRemove((_, sessionId) => {
-                        if (localPlanes[sessionId]) {
-                            scene.remove(localPlanes[sessionId]);
-                            delete localPlanes[sessionId];
-                        }
-                    });
-
+                    room.state.players.onRemove((_, sessionId) => { if (localPlanes[sessionId]) { scene.remove(localPlanes[sessionId]); delete localPlanes[sessionId]; } });
                     room.state.bullets.onAdd((bullet, bulletId) => {
                         const bulletGeo = new THREE.BoxGeometry(0.2, 0.2, 1);
                         const bulletMat = new THREE.MeshBasicMaterial({ color: 0xffff00 });
@@ -446,50 +456,27 @@ export default function Game({ mode, playerName: playerNameProp }: GameProps) {
                         localBullets[bulletId] = bulletMesh;
                         scene.add(bulletMesh);
                     });
-                    
-                    room.state.bullets.onRemove((_, bulletId) => {
-                        if(localBullets[bulletId]) {
-                            scene.remove(localBullets[bulletId]);
-                            delete localBullets[bulletId];
-                        }
-                    });
-
+                    room.state.bullets.onRemove((_, bulletId) => { if(localBullets[bulletId]) { scene.remove(localBullets[bulletId]); delete localBullets[bulletId]; } });
                     inputInterval = setInterval(() => {
                         if (roomRef.current && gameStatusRef.current === 'playing') {
                             const playerInput = {
                                 w: !!keysPressed.current['w'], s: !!keysPressed.current['s'], a: !!keysPressed.current['a'], d: !!keysPressed.current['d'],
                                 shift: !!keysPressed.current['shift'], space: !!keysPressed.current[' '], mouse0: !!keysPressed.current['mouse0'],
+                                joystick: (onScreenControls && isMobile) ? joystickInput.current : null
                             };
                             roomRef.current.send("input", playerInput);
                         }
-                    }, 1000 / 20); // 20hz
-
-                } catch (e) {
-                    console.error("JOIN ERROR", e);
-                    isConnectingRef.current = false;
-                    router.push('/online');
-                }
+                    }, 1000 / 20);
+                } catch (e) { console.error("JOIN ERROR", e); isConnectingRef.current = false; router.push('/online'); }
             }
             
-            // ======== EVENT LISTENERS ========
             const handleKeyDown = (e: KeyboardEvent) => { keysPressed.current[e.key.toLowerCase()] = true; };
             const handleKeyUp = (e: KeyboardEvent) => { keysPressed.current[e.key.toLowerCase()] = false; };
             const handleMouseDown = (e: MouseEvent) => { if(e.button === 0) keysPressed.current['mouse0'] = true; };
             const handleMouseUp = (e: MouseEvent) => { if(e.button === 0) keysPressed.current['mouse0'] = false; };
-            const handleResize = () => {
-                if (!mountRef.current) return;
-                camera.aspect = mountRef.current.clientWidth / mountRef.current.clientHeight;
-                camera.updateProjectionMatrix();
-                renderer.setSize(mountRef.current.clientWidth, mountRef.current.clientHeight);
-            };
+            const handleResize = () => { if (!mountRef.current) return; camera.aspect = mountRef.current.clientWidth / mountRef.current.clientHeight; camera.updateProjectionMatrix(); renderer.setSize(mountRef.current.clientWidth, mountRef.current.clientHeight); };
+            window.addEventListener('keydown', handleKeyDown); window.addEventListener('keyup', handleKeyUp); window.addEventListener('mousedown', handleMouseDown); window.addEventListener('mouseup', handleMouseUp); window.addEventListener('resize', handleResize);
             
-            window.addEventListener('keydown', handleKeyDown);
-            window.addEventListener('keyup', handleKeyUp);
-            window.addEventListener('mousedown', handleMouseDown);
-            window.addEventListener('mouseup', handleMouseUp);
-            window.addEventListener('resize', handleResize);
-            
-            // ======== START GAME LOOP ========
             let lastTime = 0;
             const gameLoop = (time: number) => {
                 if (!isMounted) return;
@@ -497,168 +484,115 @@ export default function Game({ mode, playerName: playerNameProp }: GameProps) {
                 const delta = lastTime > 0 ? (time - lastTime) / 1000 : 1/60;
                 lastTime = time;
 
-                if (gameStatusRef.current !== 'playing') {
-                   renderer.render(scene, camera);
-                   return; 
-                }
+                if (gameStatusRef.current !== 'playing') { renderer.render(scene, camera); return; }
                 
                 let myPlane: THREE.Group | null = null;
                 
-                // --- OFFLINE MODE LOGIC ---
                 if (mode === 'offline') {
                     myPlane = localPlanes['offline_player'];
+                    const playerState = offlinePlayerRef.current;
 
-                    const input = {
-                        w: !!keysPressed.current['w'], s: !!keysPressed.current['s'], a: !!keysPressed.current['a'], d: !!keysPressed.current['d'],
-                        shift: !!keysPressed.current['shift'], space: !!keysPressed.current[' '], mouse0: !!keysPressed.current['mouse0'],
-                    };
-
-                    if (input.w) offlinePlayer.quaternion.multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), -PITCH_SPEED * delta));
-                    if (input.s) offlinePlayer.quaternion.multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), PITCH_SPEED * delta));
-                    if (input.a) offlinePlayer.quaternion.multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 0, 1), ROLL_SPEED * delta));
-                    if (input.d) offlinePlayer.quaternion.multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 0, 1), -ROLL_SPEED * delta));
-
-                    const speed = input.shift ? BASE_SPEED * BOOST_MULTIPLIER : BASE_SPEED;
-                    const forward = new THREE.Vector3(0, 0, -1).applyQuaternion(offlinePlayer.quaternion);
-                    offlinePlayer.position.add(forward.multiplyScalar(speed * delta));
-
-                    if (myPlane) {
-                        myPlane.position.copy(offlinePlayer.position);
-                        myPlane.quaternion.copy(offlinePlayer.quaternion);
+                    if (onScreenControls && isMobile) {
+                        playerState.quaternion.multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), -YAW_SPEED_MOBILE * joystickInput.current.x * delta));
+                        playerState.position.y -= joystickInput.current.y * VERTICAL_SPEED_MOBILE * delta;
+                    } else {
+                        const input = { w: !!keysPressed.current['w'], s: !!keysPressed.current['s'], a: !!keysPressed.current['a'], d: !!keysPressed.current['d'] };
+                        if (input.w) playerState.quaternion.multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), -PITCH_SPEED * delta));
+                        if (input.s) playerState.quaternion.multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), PITCH_SPEED * delta));
+                        if (input.a) playerState.quaternion.multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 0, 1), ROLL_SPEED * delta));
+                        if (input.d) playerState.quaternion.multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 0, 1), -ROLL_SPEED * delta));
                     }
                     
-                    offlinePlayer.gunCooldown = Math.max(0, offlinePlayer.gunCooldown - delta);
-                    offlinePlayer.gunOverheat = Math.max(0, offlinePlayer.gunOverheat - 15 * delta);
-                    setGunOverheat(offlinePlayer.gunOverheat);
+                    const speed = keysPressed.current['shift'] ? BASE_SPEED * BOOST_MULTIPLIER : BASE_SPEED;
+                    const forward = new THREE.Vector3(0, 0, -1).applyQuaternion(playerState.quaternion);
+                    playerState.position.add(forward.multiplyScalar(speed * delta));
 
-                    if ((input.space || input.mouse0) && offlinePlayer.gunCooldown <= 0 && offlinePlayer.gunOverheat < 100) {
-                        offlinePlayer.gunCooldown = 0.1;
-                        offlinePlayer.gunOverheat += 5;
-
-                        const bulletId = Math.random().toString(36).substring(2, 15);
-                        const bulletVelocity = new THREE.Vector3(0, 0, -BULLET_SPEED).applyQuaternion(offlinePlayer.quaternion);
-                        if (myPlane) {
-                            const bullet = { id: bulletId, position: myPlane.position.clone(), velocity: bulletVelocity, spawnTime: time };
-                            localOfflineBullets.push(bullet);
+                    if (myPlane) { myPlane.position.copy(playerState.position); myPlane.quaternion.copy(playerState.quaternion); }
                     
+                    playerState.gunCooldown = Math.max(0, playerState.gunCooldown - delta);
+                    playerState.gunOverheat = Math.max(0, playerState.gunOverheat - 15 * delta);
+                    setGunOverheat(playerState.gunOverheat);
+
+                    if ((keysPressed.current[' '] || keysPressed.current['mouse0']) && playerState.gunCooldown <= 0 && playerState.gunOverheat < 100) {
+                        playerState.gunCooldown = 0.1;
+                        playerState.gunOverheat += 5;
+                        const bulletId = Math.random().toString(36).substring(2, 15);
+                        const bulletVelocity = new THREE.Vector3(0, 0, -BULLET_SPEED).applyQuaternion(playerState.quaternion);
+                        if (myPlane) {
                             const bulletGeo = new THREE.BoxGeometry(0.2, 0.2, 1);
                             const bulletMat = new THREE.MeshBasicMaterial({ color: 0xffff00 });
                             const bulletMesh = new THREE.Mesh(bulletGeo, bulletMat);
-                            bulletMesh.position.copy(bullet.position);
-                            localOfflineBulletMeshes[bulletId] = bulletMesh;
+                            bulletMesh.position.copy(myPlane.position);
                             scene.add(bulletMesh);
+                            const bullet = { id: bulletId, position: myPlane.position.clone(), velocity: bulletVelocity, spawnTime: time, mesh: bulletMesh };
+                            localOfflineBulletsRef.current.push(bullet);
                         }
                     }
 
-                    // Update local offline bullets
                     const now = time;
-                    for (let i = localOfflineBullets.length - 1; i >= 0; i--) {
-                        const bullet = localOfflineBullets[i];
+                    localOfflineBulletsRef.current = localOfflineBulletsRef.current.filter(bullet => {
                         bullet.position.add(bullet.velocity.clone().multiplyScalar(delta));
-                        
-                        const bulletMesh = localOfflineBulletMeshes[bullet.id];
-                        if (bulletMesh) bulletMesh.position.copy(bullet.position);
-
+                        bullet.mesh.position.copy(bullet.position);
                         if (now - bullet.spawnTime > BULLET_LIFESPAN_MS) {
-                            if (bulletMesh) scene.remove(bulletMesh);
-                            delete localOfflineBulletMeshes[bullet.id];
-                            localOfflineBullets.splice(i, 1);
+                            scene.remove(bullet.mesh);
+                            return false;
                         }
-                    }
+                        return true;
+                    });
                     
                     if (myPlane) {
                         let hasCrashed = false;
                         const terrainHitboxMesh = new THREE.Mesh(TERRAIN_COLLISION_GEOMETRY);
                         terrainHitboxMesh.position.copy(myPlane.position);
                         terrainHitboxMesh.quaternion.copy(myPlane.quaternion);
-                        terrainHitboxMesh.updateMatrixWorld();
-                        const playerHitbox = new THREE.Box3().setFromObject(terrainHitboxMesh);
+                        const playerHitbox = createScaledBox(terrainHitboxMesh, 1);
                         
-                        for (const obstacle of collidableObjects) {
-                            if (playerHitbox.intersectsBox(obstacle)) {
-                                hasCrashed = true;
-                                break;
-                            }
-                        }
-
-                        if (hasCrashed || boundaryWarningTimerRef.current <= 0 || altitudeWarningTimerRef.current <= 0) {
-                            if (offlinePlayer.health > 0) {
-                                offlinePlayer.health = 0;
-                                setPlayerHealth(0);
-                                setGameStatus('gameover');
-                            }
-                        }
+                        for (const obstacle of collidableObjects) { if (playerHitbox.intersectsBox(obstacle)) { hasCrashed = true; break; } }
+                        if (boundaryWarningTimerRef.current <= 0 || altitudeWarningTimerRef.current <= 0) { hasCrashed = true; }
+                        if (hasCrashed && playerState.health > 0) { playerState.health = 0; setPlayerHealth(0); setGameStatus('gameover'); }
                     }
                 }
 
-                // --- ONLINE MODE LOGIC ---
                 if (mode === 'online' && roomRef.current) {
                     const myId = roomRef.current.sessionId;
                     myPlane = localPlanes[myId] || null;
-
-                    // Interpolate all player positions
                     roomRef.current.state.players.forEach((player, sessionId) => {
                         const planeMesh = localPlanes[sessionId];
                         if(planeMesh) {
                             const newPos = new THREE.Vector3(player.x, player.y, player.z);
                             const newQuat = new THREE.Quaternion(player.qx, player.qy, player.qz, player.qw);
-                            
                             planeMesh.position.lerp(newPos, INTERPOLATION_FACTOR);
                             planeMesh.quaternion.slerp(newQuat, INTERPOLATION_FACTOR);
                         }
                     });
-
-                    // Update online bullets
                     roomRef.current.state.bullets.forEach((bullet, bulletId) => {
                         const bulletMesh = localBullets[bulletId];
-                        if (bulletMesh) {
-                            bulletMesh.position.set(bullet.x, bullet.y, bullet.z);
-                        }
+                        if (bulletMesh) { bulletMesh.position.set(bullet.x, bullet.y, bullet.z); }
                     });
                 }
 
-
-                // --- SHARED LOGIC (CAMERA, WARNINGS) ---
                 if (myPlane) {
                     const currentAltitude = myPlane.position.y - GROUND_Y;
                     setAltitude(currentAltitude);
                     
-                    // Altitude Warning
-                    let altWarn = false;
-                    if (currentAltitude > MAX_ALTITUDE) {
-                        altWarn = true;
-                        altitudeWarningTimerRef.current = Math.max(0, altitudeWarningTimerRef.current - delta);
-                        const opacity = Math.max(0, 1 - (altitudeWarningTimerRef.current / 5));
-                        setWhiteoutOpacity(opacity);
-                    } else {
-                        altitudeWarningTimerRef.current = 5;
-                        setWhiteoutOpacity(0);
-                    }
+                    let altWarn = currentAltitude > MAX_ALTITUDE;
+                    if (altWarn) { altitudeWarningTimerRef.current = Math.max(0, altitudeWarningTimerRef.current - delta); setWhiteoutOpacity(Math.max(0, 1 - (altitudeWarningTimerRef.current / 5))); } 
+                    else { altitudeWarningTimerRef.current = 5; setWhiteoutOpacity(0); }
                     setShowAltitudeWarning(altWarn && gameStatusRef.current === 'playing');
-                    setAltitudeWarningTimer(altitudeWarningTimerRef.current);
 
-                    // Boundary Warning
-                    let boundaryWarn = false;
-                    if (Math.abs(myPlane.position.x) > BOUNDARY || Math.abs(myPlane.position.z) > BOUNDARY) {
-                       boundaryWarn = true;
-                       boundaryWarningTimerRef.current = Math.max(0, boundaryWarningTimerRef.current - delta);
-                    } else {
-                       boundaryWarningTimerRef.current = 7;
-                    }
+                    let boundaryWarn = Math.abs(myPlane.position.x) > BOUNDARY || Math.abs(myPlane.position.z) > BOUNDARY;
+                    if (boundaryWarn) { boundaryWarningTimerRef.current = Math.max(0, boundaryWarningTimerRef.current - delta); } 
+                    else { boundaryWarningTimerRef.current = 7; }
                     setShowBoundaryWarning(boundaryWarn && gameStatusRef.current === 'playing');
-                    setBoundaryWarningTimer(boundaryWarningTimerRef.current);
 
-                    // Camera
                     const cameraOffset = new THREE.Vector3(0, 8, 15);
                     const idealOffset = cameraOffset.clone().applyQuaternion(myPlane.quaternion);
                     const idealPosition = myPlane.position.clone().add(idealOffset);
                     camera.position.lerp(idealPosition, 0.1);
                     camera.lookAt(myPlane.position);
                 }
-                
                 renderer.render(scene, camera);
             };
-            
             gameLoop(performance.now());
         }
 
@@ -668,43 +602,24 @@ export default function Game({ mode, playerName: playerNameProp }: GameProps) {
             isMounted = false;
             cancelAnimationFrame(animationFrameId);
             if (inputInterval) clearInterval(inputInterval);
-            
             roomRef.current?.leave();
             roomRef.current = null;
             isConnectingRef.current = false;
-            
-            // Remove event listeners
-            window.removeEventListener('keydown', (e) => { keysPressed.current[e.key.toLowerCase()] = true; });
-            window.removeEventListener('keyup', (e) => { keysPressed.current[e.key.toLowerCase()] = false; });
-            window.removeEventListener('mousedown', (e) => { if(e.button === 0) keysPressed.current['mouse0'] = true; });
-            window.removeEventListener('mouseup', (e) => { if(e.button === 0) keysPressed.current['mouse0'] = false; });
-            window.removeEventListener('resize', () => {});
-
-
-            // Dispose Three.js objects
-            Object.values(localPlanes).forEach(plane => scene.remove(plane));
-            Object.values(localBullets).forEach(bullet => scene.remove(bullet));
-            Object.values(localOfflineBulletMeshes).forEach(bullet => scene.remove(bullet));
-            
-            if(mountRef.current && renderer.domElement && mountRef.current.contains(renderer.domElement)) {
-                mountRef.current.removeChild(renderer.domElement);
-            }
-            renderer.dispose();
-            scene.clear();
+            window.removeEventListener('keydown', () => {}); window.removeEventListener('keyup', () => {}); window.removeEventListener('mousedown', () => {}); window.removeEventListener('mouseup', () => {}); window.removeEventListener('resize', () => {});
+            Object.values(localPlanes).forEach(plane => scene.remove(plane)); Object.values(localBullets).forEach(bullet => scene.remove(bullet)); localOfflineBulletsRef.current.forEach(b => scene.remove(b.mesh));
+            if(mountRef.current && renderer.domElement && mountRef.current.contains(renderer.domElement)) { mountRef.current.removeChild(renderer.domElement); }
+            renderer.dispose(); scene.clear();
         };
-    }, [mode, playerNameProp, router, handlePlayAgain]);
+    }, [mode, playerNameProp, router, handlePlayAgain, onScreenControls, isMobile, resetOfflineGame]);
 
 
     return (
         <div className="relative w-screen h-screen bg-background overflow-hidden touch-none" onContextMenu={(e) => e.preventDefault()}>
             <div ref={mountRef} className="absolute top-0 left-0 w-full h-full" />
             
-            {onScreenControls && isMobile && _gameStatus === 'playing' && <OnScreenControls keysPressed={keysPressed} />}
+            {onScreenControls && isMobile && _gameStatus === 'playing' && <OnScreenControls joystickInput={joystickInput} keysPressed={keysPressed} />}
 
-            <div 
-                className="absolute inset-0 bg-white z-10 pointer-events-none"
-                style={{ opacity: whiteoutOpacity, transition: 'opacity 0.5s' }}
-            />
+            <div className="absolute inset-0 bg-white z-10 pointer-events-none" style={{ opacity: whiteoutOpacity, transition: 'opacity 0.5s' }} />
 
             {_gameStatus === 'loading' && (
                 <div className="absolute inset-0 flex flex-col items-center justify-center bg-background z-20">
@@ -713,7 +628,6 @@ export default function Game({ mode, playerName: playerNameProp }: GameProps) {
                 </div>
             )}
             
-
             {_gameStatus === 'menu' && mode === 'offline' && (
                  <div className="absolute inset-0 flex items-center justify-center z-10">
                     <Card className="max-w-md mx-auto bg-card/80 backdrop-blur-sm border-primary/20 shadow-xl text-center">
@@ -732,7 +646,7 @@ export default function Game({ mode, playerName: playerNameProp }: GameProps) {
                         <CardTitle className="text-3xl font-bold">WARNING: ALTITUDE CRITICAL</CardTitle>
                         <CardContent className="p-2 pt-2">
                             <p className="text-lg">Descend below {MAX_ALTITUDE}m immediately!</p>
-                            <p className="text-5xl font-mono font-bold mt-2">{altitudeWarningTimer.toFixed(1)}</p>
+                            <p className="text-5xl font-mono font-bold mt-2">{altitudeWarningTimerRef.current.toFixed(1)}</p>
                         </CardContent>
                     </Card>
                 </div>
@@ -744,7 +658,7 @@ export default function Game({ mode, playerName: playerNameProp }: GameProps) {
                         <CardTitle className="text-3xl font-bold">WARNING: LEAVING BATTLEFIELD</CardTitle>
                         <CardContent className="p-2 pt-2">
                             <p className="text-lg">Return to the combat zone!</p>
-                            <p className="text-5xl font-mono font-bold mt-2">{boundaryWarningTimer.toFixed(1)}</p>
+                            <p className="text-5xl font-mono font-bold mt-2">{boundaryWarningTimerRef.current.toFixed(1)}</p>
                         </CardContent>
                     </Card>
                 </div>

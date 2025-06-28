@@ -16,6 +16,10 @@ const BULLET_SPEED = 200;
 const BULLET_LIFESPAN_MS = 5000;
 const PLAYER_HEALTH = 100;
 
+// New Mobile control constants
+const YAW_SPEED_MOBILE = 2.0;
+const VERTICAL_SPEED_MOBILE = 30;
+
 // Use different geometries for more precise collision detection
 const TERRAIN_COLLISION_GEOMETRY = new THREE.BoxGeometry(1.5, 1.2, 4); // Tighter box for terrain
 const BULLET_COLLISION_GEOMETRY = new THREE.BoxGeometry(8, 2, 4);   // Larger, forgiving box for bullets
@@ -39,14 +43,14 @@ export class VoxelAcesRoom extends Room<VoxelAcesState> {
 
     // Helper to create a smaller, scaled hitbox for terrain
     createScaledBox(mesh: THREE.Mesh, scale: number): THREE.Box3 {
+        mesh.updateMatrixWorld();
         const box = new THREE.Box3().setFromObject(mesh);
         const center = new THREE.Vector3();
         box.getCenter(center);
         const size = new THREE.Vector3();
         box.getSize(size);
         size.multiplyScalar(scale);
-        box.setFromCenterAndSize(center, size);
-        return box;
+        return new THREE.Box3().setFromCenterAndSize(center, size);
     };
 
     onCreate(options: any) {
@@ -114,8 +118,6 @@ export class VoxelAcesRoom extends Room<VoxelAcesState> {
                 const geo = new THREE.CylinderGeometry(radius * 0.7, radius, height, 8);
                 const mesh = new THREE.Mesh(geo);
                 mesh.position.set(mountainPosX, currentY + height / 2, mountainPosZ);
-                mesh.updateMatrixWorld();
-                
                 this.collidableObjects.push(this.createScaledBox(mesh, 0.8));
                 currentY += height * 0.8;
             }
@@ -129,13 +131,11 @@ export class VoxelAcesRoom extends Room<VoxelAcesState> {
             const trunkGeo = new THREE.CylinderGeometry(1, 1, 10, 6);
             const trunkMesh = new THREE.Mesh(trunkGeo);
             trunkMesh.position.set(treeX, GROUND_Y + 5, treeZ);
-            trunkMesh.updateMatrixWorld();
             this.collidableObjects.push(this.createScaledBox(trunkMesh, 0.8));
 
             const leavesGeo = new THREE.ConeGeometry(5, 15, 8);
             const leavesMesh = new THREE.Mesh(leavesGeo);
             leavesMesh.position.set(treeX, GROUND_Y + 15, treeZ);
-            leavesMesh.updateMatrixWorld();
             this.collidableObjects.push(this.createScaledBox(leavesMesh, 0.8));
         }
     }
@@ -185,10 +185,18 @@ export class VoxelAcesRoom extends Room<VoxelAcesState> {
 
             const input = serverPlayer.input || {};
 
-            if (input.w) serverPlayer.quaternion.multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), -PITCH_SPEED * delta));
-            if (input.s) serverPlayer.quaternion.multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), PITCH_SPEED * delta));
-            if (input.a) serverPlayer.quaternion.multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 0, 1), ROLL_SPEED * delta));
-            if (input.d) serverPlayer.quaternion.multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 0, 1), -ROLL_SPEED * delta));
+            // Determine control scheme
+            if (input.joystick) {
+                // Mobile Arcade Controls
+                serverPlayer.quaternion.multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), -YAW_SPEED_MOBILE * input.joystick.x * delta));
+                serverPlayer.position.y -= input.joystick.y * VERTICAL_SPEED_MOBILE * delta;
+            } else {
+                // PC Roll/Pitch Controls
+                if (input.w) serverPlayer.quaternion.multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), -PITCH_SPEED * delta));
+                if (input.s) serverPlayer.quaternion.multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), PITCH_SPEED * delta));
+                if (input.a) serverPlayer.quaternion.multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 0, 1), ROLL_SPEED * delta));
+                if (input.d) serverPlayer.quaternion.multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 0, 1), -ROLL_SPEED * delta));
+            }
 
             const speed = input.shift ? BASE_SPEED * BOOST_MULTIPLIER : BASE_SPEED;
             const forward = new THREE.Vector3(0, 0, -1).applyQuaternion(serverPlayer.quaternion);
@@ -249,8 +257,7 @@ export class VoxelAcesRoom extends Room<VoxelAcesState> {
             const terrainHitboxMesh = new THREE.Mesh(TERRAIN_COLLISION_GEOMETRY);
             terrainHitboxMesh.position.copy(serverPlayer.position);
             terrainHitboxMesh.quaternion.copy(serverPlayer.quaternion);
-            terrainHitboxMesh.updateMatrixWorld();
-            const playerTerrainHitbox = new THREE.Box3().setFromObject(terrainHitboxMesh);
+            const playerTerrainHitbox = this.createScaledBox(terrainHitboxMesh, 1.0);
             
             let hasCrashed = false;
             for (const obstacle of this.collidableObjects) {
@@ -273,8 +280,7 @@ export class VoxelAcesRoom extends Room<VoxelAcesState> {
                 const bulletHitboxMesh = new THREE.Mesh(BULLET_COLLISION_GEOMETRY);
                 bulletHitboxMesh.position.copy(serverPlayer.position);
                 bulletHitboxMesh.quaternion.copy(serverPlayer.quaternion);
-                bulletHitboxMesh.updateMatrixWorld();
-                const hitbox = new THREE.Box3().setFromObject(bulletHitboxMesh);
+                const hitbox = this.createScaledBox(bulletHitboxMesh, 1.0);
                 playerHitboxes.set(id, { hitbox, player: p });
             }
         });
