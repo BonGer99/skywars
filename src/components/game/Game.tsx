@@ -17,8 +17,8 @@ const MAX_ALTITUDE = 220;
 const GROUND_Y = -50;
 const BASE_SPEED = 60;
 const BOOST_MULTIPLIER = 2.0;
-const PITCH_SPEED = 2.5;
-const ROLL_SPEED = 2.5;
+const PITCH_SPEED = 1.2;
+const ROLL_SPEED = 1.5;
 const BULLET_SPEED = 200;
 const BULLET_LIFESPAN_MS = 5000;
 const INTERPOLATION_FACTOR = 0.2;
@@ -395,6 +395,8 @@ export default function Game({ mode, playerName: playerNameProp }: GameProps) {
                         if(planeMesh) {
                             const newPos = new THREE.Vector3(player.x, player.y, player.z);
                             const newQuat = new THREE.Quaternion(player.qx, player.qy, player.qz, player.qw);
+                            
+                            // Interpolate all players to smooth their movement.
                             planeMesh.position.lerp(newPos, INTERPOLATION_FACTOR);
                             planeMesh.quaternion.slerp(newQuat, INTERPOLATION_FACTOR);
                         }
