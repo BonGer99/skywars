@@ -148,9 +148,6 @@ export default function Game({ mode, serverId: serverIdProp, playerName: playerN
             enemiesRef.current = [];
             setScore(0);
             setWave(1);
-            if (!isFirstLoad) {
-                // We handle new wave spawning separately to avoid multiple calls
-            }
         }
 
         setPlayerHealth(100);
@@ -166,8 +163,10 @@ export default function Game({ mode, serverId: serverIdProp, playerName: playerN
     }, [mode]);
 
     const handlePlayAgain = useCallback(async () => {
+        resetGame();
         if(mode === 'offline') {
-            resetGame();
+            setWave(1);
+            setScore(0);
             setGameState('playing');
         } else if(mode === 'online' && serverIdProp && playerIdRef.current) {
             const playerDocRef = doc(db, 'servers', serverIdProp, 'players', playerIdRef.current);
@@ -192,7 +191,6 @@ export default function Game({ mode, serverId: serverIdProp, playerName: playerN
                     cameraRef.current.lookAt(playerRef.current.position);
                 }
                 
-                resetGame();
                 setGameState('playing');
 
             } catch (error) {
@@ -249,26 +247,33 @@ export default function Game({ mode, serverId: serverIdProp, playerName: playerN
         ground.position.y = -50;
         scene.add(ground);
         
-        // ... scenery setup (simplified for brevity)
         const scenery = new THREE.Group();
-        for (let i = 0; i < 75; i++) { /* ... create trees/bushes and add to scenery ... */ }
+        for (let i = 0; i < 75; i++) {
+            const isTree = Math.random() > 0.3;
+            const mesh = new THREE.Mesh(
+                isTree ? new THREE.ConeGeometry(3, 10, 6) : new THREE.SphereGeometry(2, 6, 6),
+                new THREE.MeshLambertMaterial({ color: isTree ? 0x228B22 : 0x8B4513, flatShading: true })
+            );
+            mesh.position.set((Math.random() - 0.5) * 1800, isTree ? 5 : 2, (Math.random() - 0.5) * 1800);
+            if (isTree) mesh.position.y = -45; else mesh.position.y = -48;
+            scenery.add(mesh);
+        }
         scene.add(scenery);
+
         const cloudLayer = new THREE.Group();
-        for(let i = 0; i < 150; i++) { /* ... create clouds and add to cloudLayer ... */ }
+        for (let i = 0; i < 150; i++) {
+            const cloudGeo = new THREE.SphereGeometry(Math.random() * 15 + 10, 8, 8);
+            const cloudMat = new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.8 });
+            const cloud = new THREE.Mesh(cloudGeo, cloudMat);
+            cloud.position.set((Math.random() - 0.5) * 2000, Math.random() * 100 + 150, (Math.random() - 0.5) * 2000);
+            cloudLayer.add(cloud);
+        }
         scene.add(cloudLayer);
 
         // ---- 2. Game Logic and Loop Definition ----
         const keysPressed: Record<string, boolean> = {};
         let gunCooldown = 0;
         let lastTime = 0;
-        
-        const startNewWave = async (waveNumber: number) => {
-            if(gameStateRef.current !== 'playing' || !playerRef.current) return;
-            setScore(s => s + (waveRef.current - 1) * 100);
-            for (let i = 0; i < waveNumber; i++) {
-                // Simplified spawn enemy logic
-            }
-        };
         
         const gameLoop = (time: number) => {
             animationFrameId = requestAnimationFrame(gameLoop);
@@ -280,7 +285,7 @@ export default function Game({ mode, serverId: serverIdProp, playerName: playerN
                 const PITCH_SPEED = 1.2;
                 const ROLL_SPEED = 1.8;
                 const YAW_SPEED = 1.0;
-                const BASE_SPEED = 30;
+                const BASE_SPEED = 60;
                 const BOOST_MULTIPLIER = 2.0;
 
                 // Player Controls
@@ -302,7 +307,7 @@ export default function Game({ mode, serverId: serverIdProp, playerName: playerN
                 // Online position update
                 if (mode === 'online' && playerIdRef.current && serverIdProp) {
                     const now = performance.now();
-                    if(now - lastUpdateTimeRef.current > 100) {
+                    if(now - lastUpdateTimeRef.current > 100) { // Update 10 times per second
                         lastUpdateTimeRef.current = now;
                         const playerDocRef = doc(db, 'servers', serverIdProp, 'players', playerIdRef.current);
                         const { x: qx, y: qy, z: qz, w: qw } = playerRef.current.quaternion;
@@ -321,35 +326,62 @@ export default function Game({ mode, serverId: serverIdProp, playerName: playerN
                     setPlayerHealth(0); 
                     if (gameStateRef.current === 'playing') setGameState('gameover');
                 }
-                // ... other boundary checks ...
 
                 // Shooting logic
                 gunCooldown = Math.max(0, gunCooldown - delta);
                 setGunOverheat(o => Math.max(0, o - 15 * delta));
                 if ((keysPressed['mouse0'] || keysPressed[' ']) && gunCooldown <= 0 && gunOverheat < 100) {
-                    // ... shooting implementation ...
-                     if (playerRef.current) {
+                    if (playerRef.current && playerIdRef.current) {
+                         gunCooldown = 0.1; 
+                         setGunOverheat(o => o + 5);
+
                          const bulletOffset = new THREE.Vector3(0, 0, -2).applyQuaternion(playerRef.current.quaternion);
                          const bulletPos = playerRef.current.position.clone().add(bulletOffset);
-                         const bulletQuat = playerRef.current.quaternion;
-                         if(mode === 'online' && serverIdProp && playerIdRef.current) {
+                         const bulletQuat = playerRef.current.quaternion.clone();
+                         const bulletVelocity = new THREE.Vector3(0, 0, -200).applyQuaternion(bulletQuat);
+                         
+                         const bulletId = Math.random().toString(36).substring(2, 15);
+                         
+                         // Create local bullet
+                         const bulletGeo = new THREE.BoxGeometry(0.2, 0.2, 1);
+                         const bulletMat = new THREE.MeshBasicMaterial({ color: 0xffff00 });
+                         const bulletMesh = new THREE.Mesh(bulletGeo, bulletMat);
+                         bulletMesh.position.copy(bulletPos);
+                         bulletMesh.quaternion.copy(bulletQuat);
+
+                         bulletsRef.current.push({
+                            id: bulletId,
+                            mesh: bulletMesh,
+                            velocity: bulletVelocity,
+                            ownerId: playerIdRef.current,
+                            spawnTime: performance.now(),
+                         });
+                         scene.add(bulletMesh);
+
+
+                         if(mode === 'online' && serverIdProp) {
                             addDoc(collection(db, 'servers', serverIdProp, 'bullets'), {
                                 ownerId: playerIdRef.current,
                                 position: { x: bulletPos.x, y: bulletPos.y, z: bulletPos.z },
                                 quaternion: { x: bulletQuat.x, y: bulletQuat.y, z: bulletQuat.z, w: bulletQuat.w },
                                 timestamp: serverTimestamp(),
-                            });
-                         } else {
-                            // Offline bullet logic
+                            }).catch(console.error);
                          }
                     }
                 }
-                
-                if (mode === 'offline') { /* ... AI logic ... */ }
             }
 
             // Bullet updates
-            for (let i = bulletsRef.current.length - 1; i >= 0; i--) { /* ... bullet logic ... */ }
+            for (let i = bulletsRef.current.length - 1; i >= 0; i--) {
+                const bullet = bulletsRef.current[i];
+                bullet.mesh.position.add(bullet.velocity.clone().multiplyScalar(delta));
+
+                // Despawn bullets after some time
+                if (performance.now() - bullet.spawnTime > 5000) {
+                    scene.remove(bullet.mesh);
+                    bulletsRef.current.splice(i, 1);
+                }
+            }
 
             // Update camera
             if (playerRef.current) {
@@ -375,17 +407,10 @@ export default function Game({ mode, serverId: serverIdProp, playerName: playerN
         
         // ---- 3. Asynchronous Game Initialization ----
         const initializeGame = async () => {
-            if (!isMounted) return;
+            if (!isMounted || !playerRef.current || !cameraRef.current) return;
+            resetGame(true);
 
             if (mode === 'offline') {
-                resetGame(true);
-                startNewWave(1);
-                 if (playerRef.current && cameraRef.current) {
-                    const idealOffset = cameraOffsetRef.current.clone().applyQuaternion(playerRef.current.quaternion);
-                    const idealPosition = playerRef.current.position.clone().add(idealOffset);
-                    cameraRef.current.position.copy(idealPosition);
-                    cameraRef.current.lookAt(playerRef.current.position);
-                }
                 setGameState('menu');
             } else if (mode === 'online' && serverIdProp && playerNameProp) {
                 try {
@@ -402,11 +427,8 @@ export default function Game({ mode, serverId: serverIdProp, playerName: playerN
                     });
                     
                     playerIdRef.current = playerDocRef.id;
-
-                    if (playerRef.current) {
-                        playerRef.current.position.set(randomPos.x, randomPos.y, randomPos.z);
-                        playerRef.current.quaternion.set(0, 0, 0, 1);
-                    }
+                    playerRef.current.position.set(randomPos.x, randomPos.y, randomPos.z);
+                    playerRef.current.quaternion.set(0, 0, 0, 1);
                     
                     await runTransaction(db, async (transaction) => {
                         const freshServerDoc = await transaction.get(serverRef);
@@ -414,20 +436,21 @@ export default function Game({ mode, serverId: serverIdProp, playerName: playerN
                         const newPlayerCount = (freshServerDoc.data().players || 0) + 1;
                         transaction.update(serverRef, { players: newPlayerCount });
                     });
+                    
+                    // CRITICAL FIX: Position camera only after player is placed
+                    const idealOffset = cameraOffsetRef.current.clone().applyQuaternion(playerRef.current.quaternion);
+                    const idealPosition = playerRef.current.position.clone().add(idealOffset);
+                    cameraRef.current.position.copy(idealPosition);
+                    cameraRef.current.lookAt(playerRef.current.position);
 
                     if (isMounted) {
-                        if (playerRef.current && cameraRef.current) {
-                            const idealOffset = cameraOffsetRef.current.clone().applyQuaternion(playerRef.current.quaternion);
-                            const idealPosition = playerRef.current.position.clone().add(idealOffset);
-                            cameraRef.current.position.copy(idealPosition);
-                            cameraRef.current.lookAt(playerRef.current.position);
-                        }
                         setGameState('playing');
                     }
+
                 } catch (error) {
                     console.error("Failed to join game:", error);
-                    toast({ title: "Error", description: "Could not join the game server.", variant: "destructive" });
-                    router.push('/online');
+                    toast({ title: "Error Joining Server", description: "Could not join the game server. You will be redirected.", variant: "destructive" });
+                    setTimeout(() => router.push('/online'), 3000);
                 }
             }
         };
@@ -445,6 +468,7 @@ export default function Game({ mode, serverId: serverIdProp, playerName: playerN
             window.removeEventListener('mouseup', handleMouseUp);
             window.removeEventListener('resize', handleResize);
             
+            // CRITICAL FIX: Robust session cleanup
             const pid = playerIdRef.current;
             if (mode === 'online' && serverIdProp && pid) {
                 const playerDocRef = doc(db, 'servers', serverIdProp, 'players', pid);
@@ -452,17 +476,30 @@ export default function Game({ mode, serverId: serverIdProp, playerName: playerN
                 runTransaction(db, async (transaction) => {
                     const serverDoc = await transaction.get(serverRef);
                     if (serverDoc.exists()) {
-                        const newPlayerCount = Math.max(0, (serverDoc.data().players || 1) - 1);
+                        const currentPlayers = serverDoc.data().players || 1;
+                        const newPlayerCount = Math.max(0, currentPlayers - 1);
                         transaction.update(serverRef, { players: newPlayerCount });
                     }
                     transaction.delete(playerDocRef);
-                }).catch(e => console.error("Error during cleanup:", e));
+                }).catch(e => console.error("Error during cleanup transaction:", e));
             }
 
             if(mountRef.current && renderer.domElement) {
                 mountRef.current.removeChild(renderer.domElement);
             }
             renderer.dispose();
+            scene.traverse(object => {
+                if (object instanceof THREE.Mesh) {
+                    if (object.geometry) object.geometry.dispose();
+                    if (object.material) {
+                        if (Array.isArray(object.material)) {
+                            object.material.forEach(material => material.dispose());
+                        } else {
+                            object.material.dispose();
+                        }
+                    }
+                }
+            });
             scene.clear();
         };
     }, []); // <-- EMPTY DEPENDENCIES: This effect runs ONCE on mount.
@@ -476,6 +513,20 @@ export default function Game({ mode, serverId: serverIdProp, playerName: playerN
             const scene = sceneRef.current;
             const myId = playerIdRef.current;
 
+            const activePlayerIds = new Set<string>();
+            snapshot.docs.forEach(doc => activePlayerIds.add(doc.id));
+
+            // Remove players who are no longer in the server data
+            for (const id in otherPlayersRef.current) {
+                if (!activePlayerIds.has(id)) {
+                    const playerMesh = otherPlayersRef.current[id]?.mesh;
+                    if (playerMesh) {
+                        scene.remove(playerMesh);
+                    }
+                    delete otherPlayersRef.current[id];
+                }
+            }
+            
             snapshot.docChanges().forEach((change) => {
                 const data = change.doc.data();
                 const id = change.doc.id;
@@ -516,30 +567,35 @@ export default function Game({ mode, serverId: serverIdProp, playerName: playerN
 
     useEffect(() => {
         if (mode !== 'online' || !serverIdProp) return;
-        const bulletsCollection = collection(db, 'servers', serverIdProp, 'bullets');
-        const unsubBullets = onSnapshot(bulletsCollection, (snapshot) => {
+        const q = collection(db, 'servers', serverIdProp, 'bullets');
+        const unsubBullets = onSnapshot(q, (snapshot) => {
              if (!sceneRef.current || !playerRef.current) return;
              const myId = playerIdRef.current;
              snapshot.docChanges().forEach(change => {
                 if (change.type === 'added') {
                     const bulletData = change.doc.data();
+                    const docId = change.doc.id;
+
                     if (bulletData.ownerId === myId) return;
+
                     const bulletGeo = new THREE.BoxGeometry(0.2, 0.2, 1);
                     const bulletMat = new THREE.MeshBasicMaterial({ color: 0xffaa00 });
                     const bulletMesh = new THREE.Mesh(bulletGeo, bulletMat);
                     bulletMesh.position.set(bulletData.position.x, bulletData.position.y, bulletData.position.z);
                     bulletMesh.quaternion.set(bulletData.quaternion.x, bulletData.quaternion.y, bulletData.quaternion.z, bulletData.quaternion.w);
                     const velocity = new THREE.Vector3(0, 0, -200).applyQuaternion(bulletMesh.quaternion);
+                    
                     bulletsRef.current.push({
-                        id: change.doc.id,
+                        id: docId,
                         mesh: bulletMesh,
                         velocity: velocity,
                         ownerId: bulletData.ownerId,
                         spawnTime: performance.now(),
                     });
                     sceneRef.current?.add(bulletMesh);
+                    
                     setTimeout(() => {
-                        deleteDoc(doc(db, 'servers', serverIdProp!, 'bullets', change.doc.id));
+                        deleteDoc(doc(db, 'servers', serverIdProp, 'bullets', docId)).catch(console.error);
                     }, 5000)
                 }
              });
