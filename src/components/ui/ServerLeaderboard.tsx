@@ -39,19 +39,44 @@ export default function ServerLeaderboard({ players: playersMap }: ServerLeaderb
       setLeaderboard(sortedPlayers);
     };
 
+    // Initial update
     updateLeaderboard();
 
-    const listeners = [
-        playersMap.onAdd(updateLeaderboard),
-        playersMap.onRemove(updateLeaderboard),
-    ];
-    playersMap.forEach(player => {
-        listeners.push(player.onChange(updateLeaderboard));
+    // Map to store listeners for each player
+    const playerListeners = new Map<string, any[]>();
+
+    const addPlayerListeners = (player: PlayerState, id: string) => {
+        // listen for changes on individual player properties
+        const listeners = [
+            player.listen("kills", updateLeaderboard),
+            player.listen("name", updateLeaderboard),
+        ];
+        playerListeners.set(id, listeners);
+    };
+
+    // Setup listeners for existing players
+    playersMap.forEach(addPlayerListeners);
+
+    // Setup listeners for players added in the future
+    const onAdd = playersMap.onAdd((player, id) => {
+        addPlayerListeners(player, id);
+        updateLeaderboard();
     });
 
+    // Setup listeners for players removed in the future
+    const onRemove = playersMap.onRemove((_, id) => {
+        if (playerListeners.has(id)) {
+            playerListeners.get(id)?.forEach(l => l.clear());
+            playerListeners.delete(id);
+        }
+        updateLeaderboard();
+    });
 
+    // Cleanup function
     return () => {
-        listeners.forEach(listener => listener.clear());
+        onAdd.clear();
+        onRemove.clear();
+        playerListeners.forEach(listeners => listeners.forEach(l => l.clear()));
     }
 
   }, [playersMap, isMobile]);
