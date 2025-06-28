@@ -8,8 +8,10 @@ import { useRouter } from 'next/navigation';
 import HUD from '@/components/ui/HUD';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { Loader2, Home } from 'lucide-react';
+import { Loader2, Home, ArrowUp, ArrowDown, ArrowLeft, ArrowRight, LocateFixed, FastForward } from 'lucide-react';
 import type { VoxelAcesState, Player } from '@/server/rooms/state/VoxelAcesState';
+import { useSettings } from '@/context/SettingsContext';
+import { useIsMobile } from '@/hooks/use-is-mobile';
 
 // Constants
 const WORLD_SEED = 12345;
@@ -23,6 +25,7 @@ const ROLL_SPEED = 1.5;
 const BULLET_SPEED = 200;
 const BULLET_LIFESPAN_MS = 5000;
 const INTERPOLATION_FACTOR = 0.15;
+const TERRAIN_COLLISION_GEOMETRY = new THREE.BoxGeometry(1.5, 1.2, 4);
 
 const createVoxelPlane = (color: THREE.ColorRepresentation) => {
     const plane = new THREE.Group();
@@ -46,6 +49,43 @@ const createVoxelPlane = (color: THREE.ColorRepresentation) => {
     plane.add(cockpit);
 
     return plane;
+};
+
+const OnScreenControls = ({ keysPressed }: { keysPressed: React.MutableRefObject<Record<string, boolean>> }) => {
+    
+  const handleTouch = (key: string, isPressed: boolean) => (event: React.TouchEvent) => {
+    event.preventDefault();
+    keysPressed.current[key] = isPressed;
+  };
+
+  return (
+    <div className="fixed inset-0 z-30 pointer-events-none text-white select-none">
+        {/* Movement Controls (Bottom Left) */}
+        <div className="absolute bottom-8 left-8 grid grid-cols-3 grid-rows-3 gap-2 pointer-events-auto">
+            <div />
+            <button onTouchStart={handleTouch('w', true)} onTouchEnd={handleTouch('w', false)} className="col-start-2 row-start-1 bg-black/40 rounded-full w-16 h-16 flex items-center justify-center backdrop-blur-sm active:bg-black/60"><ArrowUp size={32} /></button>
+            <div />
+
+            <button onTouchStart={handleTouch('a', true)} onTouchEnd={handleTouch('a', false)} className="col-start-1 row-start-2 bg-black/40 rounded-full w-16 h-16 flex items-center justify-center backdrop-blur-sm active:bg-black/60"><ArrowLeft size={32} /></button>
+            <div />
+            <button onTouchStart={handleTouch('d', true)} onTouchEnd={handleTouch('d', false)} className="col-start-3 row-start-2 bg-black/40 rounded-full w-16 h-16 flex items-center justify-center backdrop-blur-sm active:bg-black/60"><ArrowRight size={32} /></button>
+            
+            <div />
+            <button onTouchStart={handleTouch('s', true)} onTouchEnd={handleTouch('s', false)} className="col-start-2 row-start-3 bg-black/40 rounded-full w-16 h-16 flex items-center justify-center backdrop-blur-sm active:bg-black/60"><ArrowDown size={32} /></button>
+            <div />
+        </div>
+
+        {/* Action Controls (Bottom Right) */}
+        <div className="absolute bottom-8 right-8 flex flex-col gap-4 items-center pointer-events-auto">
+             <button onTouchStart={handleTouch('shift', true)} onTouchEnd={handleTouch('shift', false)} className="bg-blue-600/60 rounded-full w-20 h-20 flex items-center justify-center backdrop-blur-sm active:bg-blue-600/80">
+                <FastForward size={32} />
+             </button>
+            <button onTouchStart={handleTouch('mouse0', true)} onTouchEnd={handleTouch('mouse0', false)} className="bg-red-600/60 rounded-full w-24 h-24 flex items-center justify-center backdrop-blur-sm active:bg-red-600/80">
+                 <LocateFixed size={40} />
+            </button>
+        </div>
+    </div>
+  );
 };
 
 type GameStatus = 'loading' | 'menu' | 'playing' | 'gameover';
@@ -77,6 +117,8 @@ export default function Game({ mode, playerName: playerNameProp }: GameProps) {
     const [playerHealth, setPlayerHealth] = useState(100);
     const [altitude, setAltitude] = useState(0);
     const [gunOverheat, setGunOverheat] = useState(0);
+    const { onScreenControls } = useSettings();
+    const isMobile = useIsMobile();
     
     // Warning Timers (State for UI, Ref for logic)
     const [showAltitudeWarning, setShowAltitudeWarning] = useState(false);
@@ -181,8 +223,9 @@ export default function Game({ mode, playerName: playerNameProp }: GameProps) {
                 for (let j = 0; j < layers; j++) {
                     const height = seededRandom() * 30 + 20;
                     const radius = baseRadius * ((layers - j) / layers);
-                    const isTopLayer = j === layers - 1;
-                    const matColor = isTopLayer ? 0x228B22 : 0x6A6A6A;
+                    const isSnowCapped = j >= layers - 2 && currentY + height > 100;
+                    const matColor = isSnowCapped ? 0xffffff : 0x8B4513;
+
                     const geo = new THREE.CylinderGeometry(radius * 0.7, radius, height, 8);
                     const mat = new THREE.MeshLambertMaterial({ color: matColor, flatShading: true });
                     const mesh = new THREE.Mesh(geo, mat);
@@ -450,7 +493,12 @@ export default function Game({ mode, playerName: playerNameProp }: GameProps) {
                     
                     if (myPlane) {
                         let hasCrashed = false;
-                        const playerHitbox = new THREE.Box3().setFromObject(myPlane);
+                        const terrainHitboxMesh = new THREE.Mesh(TERRAIN_COLLISION_GEOMETRY);
+                        terrainHitboxMesh.position.copy(myPlane.position);
+                        terrainHitboxMesh.quaternion.copy(myPlane.quaternion);
+                        terrainHitboxMesh.updateMatrixWorld();
+                        const playerHitbox = new THREE.Box3().setFromObject(terrainHitboxMesh);
+                        
                         for (const obstacle of collidableObjects) {
                             if (playerHitbox.intersectsBox(obstacle)) {
                                 hasCrashed = true;
@@ -576,6 +624,8 @@ export default function Game({ mode, playerName: playerNameProp }: GameProps) {
         <div className="relative w-screen h-screen bg-background overflow-hidden" onContextMenu={(e) => e.preventDefault()}>
             <div ref={mountRef} className="absolute top-0 left-0 w-full h-full" />
             
+            {onScreenControls && isMobile && _gameStatus === 'playing' && <OnScreenControls keysPressed={keysPressed} />}
+
             <div 
                 className="absolute inset-0 bg-white z-10 pointer-events-none"
                 style={{ opacity: whiteoutOpacity, transition: 'opacity 0.5s' }}

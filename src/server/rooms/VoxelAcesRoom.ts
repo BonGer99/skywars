@@ -16,6 +16,10 @@ const BULLET_SPEED = 200;
 const BULLET_LIFESPAN_MS = 5000;
 const PLAYER_HEALTH = 100;
 
+// Use different geometries for more precise collision detection
+const TERRAIN_COLLISION_GEOMETRY = new THREE.BoxGeometry(1.5, 1.2, 4); // Tighter box for terrain
+const BULLET_COLLISION_GEOMETRY = new THREE.BoxGeometry(8, 2, 4);   // Larger, forgiving box for bullets
+
 interface ServerPlayerData {
     position: THREE.Vector3;
     quaternion: THREE.Quaternion;
@@ -35,13 +39,8 @@ export class VoxelAcesRoom extends Room<VoxelAcesState> {
 
     onCreate(options: any) {
         this.setState(new VoxelAcesState());
-
-        // Increase patch rate for smoother sync
-        this.setPatchRate(1000 / 30); // ~33ms, 30fps
-
-        // Setup world generation
+        this.setPatchRate(1000 / 30);
         this.generateWorld();
-
         this.setSimulationInterval((deltaTime) => this.update(deltaTime / 1000));
 
         this.onMessage("input", (client, input) => {
@@ -64,7 +63,6 @@ export class VoxelAcesRoom extends Room<VoxelAcesState> {
                 playerState.qy = 0;
                 playerState.qz = 0;
                 playerState.qw = 1;
-                // Keep score on respawn
 
                 serverPlayer.position.set(playerState.x, playerState.y, playerState.z);
                 serverPlayer.quaternion.set(0, 0, 0, 1);
@@ -235,13 +233,16 @@ export class VoxelAcesRoom extends Room<VoxelAcesState> {
                 serverPlayer.altitudeTimer = 5;
             }
 
-            // Authoritative Collision Checks
-            const playerHitbox = new THREE.Box3().setFromObject(new THREE.Mesh(new THREE.BoxGeometry(8, 2, 4)));
-            playerHitbox.applyMatrix4(new THREE.Matrix4().compose(serverPlayer.position, serverPlayer.quaternion, new THREE.Vector3(1,1,1)));
-
+            // Authoritative Terrain Collision Checks (using the tighter hitbox)
+            const terrainHitboxMesh = new THREE.Mesh(TERRAIN_COLLISION_GEOMETRY);
+            terrainHitboxMesh.position.copy(serverPlayer.position);
+            terrainHitboxMesh.quaternion.copy(serverPlayer.quaternion);
+            terrainHitboxMesh.updateMatrixWorld();
+            const playerTerrainHitbox = new THREE.Box3().setFromObject(terrainHitboxMesh);
+            
             let hasCrashed = false;
             for (const obstacle of this.collidableObjects) {
-                if (playerHitbox.intersectsBox(obstacle)) {
+                if (playerTerrainHitbox.intersectsBox(obstacle)) {
                     hasCrashed = true;
                     break;
                 }
@@ -257,8 +258,11 @@ export class VoxelAcesRoom extends Room<VoxelAcesState> {
         this.state.players.forEach((p, id) => {
             const serverPlayer = this.serverPlayers.get(id);
             if(serverPlayer && p.health > 0) {
-                const hitbox = new THREE.Box3().setFromObject(new THREE.Mesh(new THREE.BoxGeometry(8, 2, 4)));
-                hitbox.applyMatrix4(new THREE.Matrix4().compose(serverPlayer.position, serverPlayer.quaternion, new THREE.Vector3(1,1,1)));
+                const bulletHitboxMesh = new THREE.Mesh(BULLET_COLLISION_GEOMETRY);
+                bulletHitboxMesh.position.copy(serverPlayer.position);
+                bulletHitboxMesh.quaternion.copy(serverPlayer.quaternion);
+                bulletHitboxMesh.updateMatrixWorld();
+                const hitbox = new THREE.Box3().setFromObject(bulletHitboxMesh);
                 playerHitboxes.set(id, { hitbox, player: p });
             }
         });
@@ -279,7 +283,7 @@ export class VoxelAcesRoom extends Room<VoxelAcesState> {
                 return;
             }
 
-            // Collision detection
+            // Bullet-Plane Collision detection (using the larger hitbox)
             for (const [targetId, targetData] of playerHitboxes.entries()) {
                 if (targetId === bullet.ownerId) continue;
                 
