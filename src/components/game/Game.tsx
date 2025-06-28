@@ -13,7 +13,7 @@ import { AlertDialog, AlertDialogTrigger, AlertDialogContent, AlertDialogHeader,
 import { Input } from '@/components/ui/input';
 import { useToast } from "@/hooks/use-toast";
 import { db } from '@/lib/firebase';
-import { doc, onSnapshot, collection, addDoc, serverTimestamp, deleteDoc, updateDoc, writeBatch, getDoc } from 'firebase/firestore';
+import { doc, onSnapshot, collection, addDoc, serverTimestamp, deleteDoc, updateDoc, writeBatch, getDoc, runTransaction, increment } from 'firebase/firestore';
 
 
 type GameState = 'loading' | 'menu' | 'playing' | 'gameover';
@@ -66,6 +66,13 @@ const createVoxelPlane = (color: THREE.Color) => {
     const cockpit = new THREE.Mesh(cockpitGeo, cockpitMat);
     cockpit.position.set(0, 0.8, -0.5);
     plane.add(cockpit);
+
+    // Add a larger, invisible hitbox
+    const hitboxGeo = new THREE.BoxGeometry(9, 3, 5); // A bit larger than the plane
+    const hitboxMat = new THREE.MeshBasicMaterial({ visible: false });
+    const hitbox = new THREE.Mesh(hitboxGeo, hitboxMat);
+    hitbox.name = 'hitbox'; // Name it for easy lookup
+    plane.add(hitbox);
     
     return plane;
 };
@@ -129,6 +136,37 @@ export default function Game({ mode, serverId: serverIdProp, playerName: playerN
             });
         }
     };
+
+    const handlePlayerHit = useCallback(async (hitPlayerId: string) => {
+        if (!serverIdProp || !playerIdRef.current || hitPlayerId === playerIdRef.current) return;
+
+        const hitPlayerDocRef = doc(db, 'servers', serverIdProp, 'players', hitPlayerId);
+        const myPlayerDocRef = doc(db, 'servers', serverIdProp, 'players', playerIdRef.current);
+    
+        try {
+            await runTransaction(db, async (transaction) => {
+                const hitPlayerDoc = await transaction.get(hitPlayerDocRef);
+                if (!hitPlayerDoc.exists()) {
+                    throw "Hit player document does not exist!";
+                }
+    
+                const currentHealth = hitPlayerDoc.data().health;
+                if (currentHealth <= 0) {
+                    return; // Don't do anything if they are already dead
+                }
+                const newHealth = Math.max(0, currentHealth - 10);
+    
+                transaction.update(hitPlayerDocRef, { health: newHealth });
+    
+                // If this hit was the one that killed them, I get a point.
+                if (currentHealth > 0 && newHealth === 0) {
+                    transaction.update(myPlayerDocRef, { kills: increment(1) });
+                }
+            });
+        } catch (e) {
+            console.error("Player hit transaction failed: ", e);
+        }
+    }, [serverIdProp]);
 
     const resetGame = useCallback(() => {
         if (!playerRef.current || !sceneRef.current) return;
@@ -384,15 +422,44 @@ export default function Game({ mode, serverId: serverIdProp, playerName: playerN
                 }
             }
 
-            // Bullet updates
+            // Bullet updates and collision detection
             for (let i = bulletsRef.current.length - 1; i >= 0; i--) {
                 const bullet = bulletsRef.current[i];
                 bullet.mesh.position.add(bullet.velocity.clone().multiplyScalar(delta));
-                if (performance.now() - bullet.spawnTime > 5000) {
+                
+                let bulletRemoved = false;
+
+                // Only the player who fired the bullet checks for collision
+                if (bullet.ownerId === playerIdRef.current) {
+                    if (mode === 'online') {
+                        for (const opponentId in otherPlayersRef.current) {
+                            if (opponentId === playerIdRef.current) continue; // Can't shoot myself
+
+                            const opponent = otherPlayersRef.current[opponentId];
+                            const opponentHitboxMesh = opponent.mesh?.getObjectByName('hitbox');
+
+                            if (opponent.health > 0 && opponentHitboxMesh) {
+                                const opponentBBox = new THREE.Box3().setFromObject(opponentHitboxMesh);
+                                if (opponentBBox.containsPoint(bullet.mesh.position)) {
+                                    handlePlayerHit(opponentId); // Deal damage through Firestore
+
+                                    scene.remove(bullet.mesh);
+                                    bulletsRef.current.splice(i, 1);
+                                    bulletRemoved = true;
+                                    break; // Exit opponent loop since bullet is gone
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Despawn bullet after time, if it wasn't already removed by a collision
+                if (!bulletRemoved && performance.now() - bullet.spawnTime > 5000) {
                     scene.remove(bullet.mesh);
                     bulletsRef.current.splice(i, 1);
                 }
             }
+
 
             // Update camera
             if (playerRef.current && cameraRef.current) {
@@ -584,7 +651,7 @@ export default function Game({ mode, serverId: serverIdProp, playerName: playerN
                 mountRef.current.removeChild(renderer.domElement);
             }
         };
-    }, [mode, serverIdProp, playerNameProp, router, toast, resetGame]);
+    }, [mode, serverIdProp, playerNameProp, router, toast, resetGame, handlePlayerHit]);
 
 
     const inviteLink = serverIdProp ? `${typeof window !== 'undefined' ? window.location.origin : ''}/online` : '';
