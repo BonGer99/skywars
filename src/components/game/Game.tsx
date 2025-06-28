@@ -13,7 +13,7 @@ import { AlertDialog, AlertDialogTrigger, AlertDialogContent, AlertDialogHeader,
 import { Input } from '@/components/ui/input';
 import { useToast } from "@/hooks/use-toast";
 import { db } from '@/lib/firebase';
-import { doc, runTransaction, onSnapshot, collection, addDoc, serverTimestamp, setDoc, deleteDoc, updateDoc } from 'firebase/firestore';
+import { doc, runTransaction, onSnapshot, collection, addDoc, serverTimestamp, deleteDoc, updateDoc } from 'firebase/firestore';
 
 
 type GameState = 'loading' | 'menu' | 'playing' | 'gameover';
@@ -69,6 +69,7 @@ const createVoxelPlane = (color: THREE.Color) => {
     
     return plane;
 };
+
 
 export default function Game({ mode, serverId: serverIdProp, playerName: playerNameProp }: GameProps) {
     const mountRef = useRef<HTMLDivElement>(null);
@@ -221,7 +222,7 @@ export default function Game({ mode, serverId: serverIdProp, playerName: playerN
         mount.appendChild(renderer.domElement);
         
         const handleResize = () => {
-            if (!mount) return;
+            if (!mount || !isMounted) return;
             const width = mount.clientWidth;
             const height = mount.clientHeight;
             camera.aspect = width / height;
@@ -276,6 +277,7 @@ export default function Game({ mode, serverId: serverIdProp, playerName: playerN
         let lastTime = 0;
         
         const gameLoop = (time: number) => {
+            if (!isMounted) return;
             animationFrameId = requestAnimationFrame(gameLoop);
             const delta = lastTime > 0 ? (time - lastTime) / 1000 : 1/60;
             lastTime = time;
@@ -358,7 +360,6 @@ export default function Game({ mode, serverId: serverIdProp, playerName: playerN
                          });
                          scene.add(bulletMesh);
 
-
                          if(mode === 'online' && serverIdProp) {
                             addDoc(collection(db, 'servers', serverIdProp, 'bullets'), {
                                 ownerId: playerIdRef.current,
@@ -384,7 +385,7 @@ export default function Game({ mode, serverId: serverIdProp, playerName: playerN
             }
 
             // Update camera
-            if (playerRef.current) {
+            if (playerRef.current && cameraRef.current) {
                 const idealOffset = cameraOffsetRef.current.clone().applyQuaternion(playerRef.current.quaternion);
                 const idealPosition = playerRef.current.position.clone().add(idealOffset);
                 camera.position.lerp(idealPosition, 0.1);
@@ -420,6 +421,7 @@ export default function Game({ mode, serverId: serverIdProp, playerName: playerN
                     const playerDocRef = await addDoc(collection(db, `servers/${serverIdProp}/players`), {
                         name: playerNameProp,
                         joinedAt: serverTimestamp(),
+                        lastSeen: serverTimestamp(),
                         kills: 0,
                         health: 100,
                         position: randomPos,
@@ -437,7 +439,6 @@ export default function Game({ mode, serverId: serverIdProp, playerName: playerN
                         transaction.update(serverRef, { players: newPlayerCount });
                     });
                     
-                    // CRITICAL FIX: Position camera only after player is placed
                     const idealOffset = cameraOffsetRef.current.clone().applyQuaternion(playerRef.current.quaternion);
                     const idealPosition = playerRef.current.position.clone().add(idealOffset);
                     cameraRef.current.position.copy(idealPosition);
@@ -468,7 +469,6 @@ export default function Game({ mode, serverId: serverIdProp, playerName: playerN
             window.removeEventListener('mouseup', handleMouseUp);
             window.removeEventListener('resize', handleResize);
             
-            // CRITICAL FIX: Robust session cleanup
             const pid = playerIdRef.current;
             if (mode === 'online' && serverIdProp && pid) {
                 const playerDocRef = doc(db, 'servers', serverIdProp, 'players', pid);
@@ -506,64 +506,75 @@ export default function Game({ mode, serverId: serverIdProp, playerName: playerN
 
     // ---- FIRESTORE LISTENERS ----
     useEffect(() => {
-        if (mode !== 'online' || !serverIdProp) return;
-        const playersCollection = collection(db, 'servers', serverIdProp, 'players');
-        const unsubFirestore = onSnapshot(playersCollection, (snapshot) => {
-            if (!sceneRef.current) return;
+        if (mode !== 'online' || !serverIdProp || !playerIdRef.current) return;
+
+        const heartbeatInterval = setInterval(() => {
+            if (playerIdRef.current) {
+                const playerDocRef = doc(db, 'servers', serverIdProp, 'players', playerIdRef.current);
+                updateDoc(playerDocRef, { lastSeen: serverTimestamp() }).catch(console.error);
+            }
+        }, 10000); // Heartbeat every 10 seconds
+
+        const playersCollectionRef = collection(db, 'servers', serverIdProp, 'players');
+        const unsubPlayers = onSnapshot(playersCollectionRef, (snapshot) => {
+            if (!sceneRef.current || !playerRef.current) return;
             const scene = sceneRef.current;
             const myId = playerIdRef.current;
+            const now = Date.now();
+            const STALE_THRESHOLD_MS = 15000; // 15 seconds
 
-            const activePlayerIds = new Set<string>();
-            snapshot.docs.forEach(doc => activePlayerIds.add(doc.id));
+            const currentPlayersOnScreen = { ...otherPlayersRef.current };
+            const freshPlayerIds = new Set<string>();
 
-            // Remove players who are no longer in the server data
-            for (const id in otherPlayersRef.current) {
-                if (!activePlayerIds.has(id)) {
-                    const playerMesh = otherPlayersRef.current[id]?.mesh;
-                    if (playerMesh) {
-                        scene.remove(playerMesh);
-                    }
-                    delete otherPlayersRef.current[id];
-                }
-            }
-            
-            snapshot.docChanges().forEach((change) => {
-                const data = change.doc.data();
-                const id = change.doc.id;
+            snapshot.forEach(docSnap => {
+                const data = docSnap.data();
+                const id = docSnap.id;
 
                 if (id === myId) {
+                    // This is me, handle my own data updates (e.g., health change from server)
                     if (playerHealth !== data.health) setPlayerHealth(data.health);
                     if (data.health <= 0 && gameStateRef.current === 'playing') setGameState('gameover');
                     if (score !== data.kills) setScore(data.kills);
                     return;
+                };
+
+                const lastSeenTimestamp = data.lastSeen?.toDate()?.getTime();
+                if (!lastSeenTimestamp || (now - lastSeenTimestamp) > STALE_THRESHOLD_MS) {
+                    return; // Stale player, skip them. They'll be removed below.
                 }
 
-                const playerMesh = otherPlayersRef.current[id]?.mesh;
+                freshPlayerIds.add(id);
+                let otherPlayer = currentPlayersOnScreen[id];
 
-                if (change.type === 'added') {
-                    if (!playerMesh) {
-                        const newPlayerPlane = createVoxelPlane(new THREE.Color(0xffaa00));
-                        if (data.position) newPlayerPlane.position.set(data.position.x, data.position.y, data.position.z);
-                        if (data.quaternion) newPlayerPlane.quaternion.set(data.quaternion.x, data.quaternion.y, data.quaternion.z, data.quaternion.w);
-                        scene.add(newPlayerPlane);
-                        otherPlayersRef.current[id] = { mesh: newPlayerPlane, name: data.name || 'Unknown', health: data.health || 100 };
-                    }
-                } else if (change.type === 'modified') {
-                    if (playerMesh) {
-                        if(data.position) playerMesh.position.lerp(new THREE.Vector3(data.position.x, data.position.y, data.position.z), 0.3);
-                        if(data.quaternion) playerMesh.quaternion.slerp(new THREE.Quaternion(data.quaternion.x, data.quaternion.y, data.quaternion.z, data.quaternion.w), 0.3);
-                        otherPlayersRef.current[id].health = data.health;
-                    }
-                } else if (change.type === 'removed') {
-                    if (playerMesh) {
-                        scene.remove(playerMesh);
-                        delete otherPlayersRef.current[id];
-                    }
+                if (!otherPlayer) {
+                    // Player is new or has come back online
+                    const newPlayerPlane = createVoxelPlane(new THREE.Color(0xffaa00));
+                    scene.add(newPlayerPlane);
+                    otherPlayersRef.current[id] = { mesh: newPlayerPlane, name: data.name || 'Unknown', health: data.health || 100 };
+                    otherPlayer = otherPlayersRef.current[id];
                 }
+
+                // Update position and rotation for the fresh player
+                if (data.position) otherPlayer.mesh.position.lerp(new THREE.Vector3(data.position.x, data.position.y, data.position.z), 0.3);
+                if (data.quaternion) otherPlayer.mesh.quaternion.slerp(new THREE.Quaternion(data.quaternion.x, data.quaternion.y, data.quaternion.z, data.quaternion.w), 0.3);
+                otherPlayer.health = data.health;
             });
+            
+            // Garbage collect: Remove players from the scene who are no longer in the fresh list
+            for (const id in currentPlayersOnScreen) {
+                if (!freshPlayerIds.has(id)) {
+                    scene.remove(currentPlayersOnScreen[id].mesh);
+                    delete otherPlayersRef.current[id];
+                }
+            }
         });
-        return () => unsubFirestore();
+
+        return () => {
+            clearInterval(heartbeatInterval);
+            unsubPlayers();
+        };
     }, [mode, serverIdProp, playerHealth, score]);
+
 
     useEffect(() => {
         if (mode !== 'online' || !serverIdProp) return;
@@ -594,6 +605,7 @@ export default function Game({ mode, serverId: serverIdProp, playerName: playerN
                     });
                     sceneRef.current?.add(bulletMesh);
                     
+                    // Cleanup bullet document after a delay
                     setTimeout(() => {
                         deleteDoc(doc(db, 'servers', serverIdProp, 'bullets', docId)).catch(console.error);
                     }, 5000)
@@ -720,3 +732,5 @@ export default function Game({ mode, serverId: serverIdProp, playerName: playerN
         </div>
     );
 }
+
+    
