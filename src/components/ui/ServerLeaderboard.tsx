@@ -74,8 +74,8 @@ export default function ServerLeaderboard({ players: playersMap }: ServerLeaderb
 
     // Cleanup function
     return () => {
-        onAdd.clear();
-        onRemove.clear();
+        onAdd();
+        onRemove();
         playerListeners.forEach(listeners => listeners.forEach(l => l.clear()));
     }
 
