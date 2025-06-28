@@ -90,20 +90,16 @@ export default function Game({ mode, serverId: serverIdProp, playerName: playerN
     const [boundaryWarningTimer, setBoundaryWarningTimer] = useState(7);
     const [whiteoutOpacity, setWhiteoutOpacity] = useState(0);
     
+    // Lifecycle control
+    const [gameSessionId, setGameSessionId] = useState(0);
+    
     // Mutable Refs for state inside the game loop
     const playerIdRef = useRef<string | null>(null);
-    const gameInitializedRef = useRef(false);
     const gameStateRef = useRef<GameState>(gameState);
     useEffect(() => {
         gameStateRef.current = gameState;
     }, [gameState]);
 
-    
-    // THREE.js & Game Object Refs
-    const playerRef = useRef<THREE.Group | null>(null);
-    const localPlanesRef = useRef<Record<string, LocalPlane>>({});
-    const localBulletsRef = useRef<Record<string, LocalBullet>>({});
-    
     const keysPressed = useRef<Record<string, boolean>>({}).current;
 
     const handleLeaveGame = useCallback(() => { 
@@ -122,36 +118,35 @@ export default function Game({ mode, serverId: serverIdProp, playerName: playerN
         });
     };
 
-    const handlePlayAgain = useCallback(async () => {
-        if (mode === 'online' && serverIdProp && playerNameProp) {
-          setGameState('loading');
-          const { playerId } = await GameActions.joinServer(serverIdProp, playerNameProp);
-          playerIdRef.current = playerId;
-          setGameState('playing');
-        } else {
-            // Offline mode reset
-            setScore(0);
-            setWave(1);
-            setPlayerHealth(100);
-            setGunOverheat(0);
-            if(playerRef.current) {
-              playerRef.current.position.set(0, 50, 0);
-              playerRef.current.quaternion.set(0, 0, 0, 1);
-            }
-            setGameState('playing');
-        }
-    }, [mode, serverIdProp, playerNameProp]);
-
-    // This effect runs once to set up the entire game
-    useEffect(() => {
-        if (typeof window === 'undefined' || !mountRef.current || gameInitializedRef.current) return;
+    const handlePlayAgain = useCallback(() => {
+        // Reset all client-side state
+        setGameState('loading');
+        setScore(0);
+        setWave(1);
+        setPlayerHealth(100);
+        setGunOverheat(0);
+        setAltitude(0);
+        setShowAltitudeWarning(false);
+        setAltitudeWarningTimer(5);
+        setShowBoundaryWarning(false);
+        setBoundaryWarningTimer(7);
+        setWhiteoutOpacity(0);
         
-        gameInitializedRef.current = true;
+        // This triggers the main useEffect to re-run, cleaning up the old game and starting a new one.
+        setGameSessionId(id => id + 1);
+    }, []);
+
+    // This is the main game setup effect. It runs ONCE per game session.
+    useEffect(() => {
+        if (typeof window === 'undefined' || !mountRef.current) return;
+        
         const mount = mountRef.current;
         let animationFrameId: number;
         let stateUpdateInterval: NodeJS.Timeout;
         let inputUpdateInterval: NodeJS.Timeout;
-
+        
+        const localPlanes: Record<string, LocalPlane> = {};
+        const localBullets: Record<string, LocalBullet> = {};
 
         // ---- 1. Synchronous Three.js Setup ----
         const scene = new THREE.Scene();
@@ -172,7 +167,6 @@ export default function Game({ mode, serverId: serverIdProp, playerName: playerN
         window.addEventListener('resize', handleResize);
         
         const player = createVoxelPlane(0x0077ff); // Player is blue
-        playerRef.current = player;
         scene.add(player);
 
         const ambientLight = new THREE.AmbientLight(0xffffff, 0.7);
@@ -218,46 +212,41 @@ export default function Game({ mode, serverId: serverIdProp, playerName: playerN
             const delta = lastTime > 0 ? (time - lastTime) / 1000 : 1/60;
             lastTime = time;
 
-            if (gameStateRef.current === 'playing' && playerRef.current) {
+            if (gameStateRef.current === 'playing' && player) {
                 // Handle warnings and camera updates locally
                 const currentAltitude = player.position.y - ground.position.y;
                 setAltitude(currentAltitude);
                 
+                let altWarn = false;
                 if (currentAltitude > MAX_ALTITUDE) {
-                    if(gameStateRef.current === 'playing') setShowAltitudeWarning(true);
+                    altWarn = true;
                     setAltitudeWarningTimer(t => Math.max(0, t - delta));
                     const opacity = Math.max(0, 1 - (altitudeWarningTimer / 5));
                     setWhiteoutOpacity(opacity);
                 } else {
-                    setShowAltitudeWarning(false);
                     setAltitudeWarningTimer(5);
                     setWhiteoutOpacity(0);
                 }
+                setShowAltitudeWarning(altWarn && gameStateRef.current === 'playing');
+
+                let boundaryWarn = false;
                  if (Math.abs(player.position.x) > BOUNDARY || Math.abs(player.position.z) > BOUNDARY) {
-                    if(gameStateRef.current === 'playing') setShowBoundaryWarning(true);
+                    boundaryWarn = true;
                     setBoundaryWarningTimer(t => Math.max(0, t - delta));
                 } else {
-                    setShowBoundaryWarning(false);
                     setBoundaryWarningTimer(7);
                 }
+                setShowBoundaryWarning(boundaryWarn && gameStateRef.current === 'playing');
 
                 const cameraOffset = new THREE.Vector3(0, 8, 15);
-                const idealOffset = cameraOffset.clone().applyQuaternion(playerRef.current.quaternion);
-                const idealPosition = playerRef.current.position.clone().add(idealOffset);
+                const idealOffset = cameraOffset.clone().applyQuaternion(player.quaternion);
+                const idealPosition = player.position.clone().add(idealOffset);
                 camera.position.lerp(idealPosition, 0.1);
-                camera.lookAt(playerRef.current.position);
+                camera.lookAt(player.position);
             }
             
-            // Client-side visual interpolation for the main player
-            if (playerRef.current?.userData?.serverPosition) {
-                playerRef.current.position.lerp(playerRef.current.userData.serverPosition, 0.2);
-            }
-            if (playerRef.current?.userData?.serverQuaternion) {
-                playerRef.current.quaternion.slerp(playerRef.current.userData.serverQuaternion, 0.2);
-            }
-
-            // Client-side visual interpolation for other players
-            Object.values(localPlanesRef.current).forEach(p => {
+            // Client-side visual interpolation for all planes
+            Object.values(localPlanes).forEach(p => {
                 if (p.mesh.userData.serverPosition) {
                     p.mesh.position.lerp(p.mesh.userData.serverPosition, 0.2);
                 }
@@ -265,14 +254,25 @@ export default function Game({ mode, serverId: serverIdProp, playerName: playerN
                     p.mesh.quaternion.slerp(p.mesh.userData.serverQuaternion, 0.2);
                 }
             });
+            // Main player is just one of the local planes now
+            const myPlane = localPlanes[playerIdRef.current!];
+            if(myPlane) {
+                 if (myPlane.mesh.userData.serverPosition) {
+                    player.position.lerp(myPlane.mesh.userData.serverPosition, 0.2);
+                }
+                if (myPlane.mesh.userData.serverQuaternion) {
+                    player.quaternion.slerp(myPlane.mesh.userData.serverQuaternion, 0.2);
+                }
+            }
+
 
             // Update local bullets based on their last known position from server
             const now = performance.now();
-            for (const bulletId in localBulletsRef.current) {
-                const bullet = localBulletsRef.current[bulletId];
+            for (const bulletId in localBullets) {
+                const bullet = localBullets[bulletId];
                 if (now - bullet.spawnTime > 1000) { // Remove after 1 sec if not updated
                     scene.remove(bullet.mesh);
-                    delete localBulletsRef.current[bulletId];
+                    delete localBullets[bulletId];
                 }
             }
             
@@ -291,14 +291,11 @@ export default function Game({ mode, serverId: serverIdProp, playerName: playerN
           }
           
           try {
-            const { playerId, player: initialPlayerState } = await GameActions.joinServer(serverIdProp, playerNameProp);
-            playerIdRef.current = playerId;
+            const { playerId: newPlayerId, player: initialPlayerState } = await GameActions.joinServer(serverIdProp, playerNameProp);
+            playerIdRef.current = newPlayerId;
             
-            if (playerRef.current) {
-              // initialPlayerState comes from a server action and has serialized THREE.js objects
-              playerRef.current.position.fromArray(initialPlayerState.position);
-              playerRef.current.quaternion.fromArray(initialPlayerState.quaternion);
-            }
+            player.position.fromArray(initialPlayerState.position);
+            player.quaternion.fromArray(initialPlayerState.quaternion);
             
             setGameState('playing');
             
@@ -314,8 +311,6 @@ export default function Game({ mode, serverId: serverIdProp, playerName: playerN
               // Update my player
               const myState = state.players[myId!];
               if (myState) {
-                  playerRef.current!.userData.serverPosition = new THREE.Vector3().fromArray(myState.position);
-                  playerRef.current!.userData.serverQuaternion = new THREE.Quaternion().fromArray(myState.quaternion);
                   setPlayerHealth(myState.health);
                   setScore(myState.kills);
 
@@ -323,23 +318,20 @@ export default function Game({ mode, serverId: serverIdProp, playerName: playerN
                       setGameState('gameover');
                   }
               } else if (gameStateRef.current === 'playing' && myId) {
-                  // I've been removed from the server state (e.g., timed out)
+                  // I've been removed from the server state (e.g., timed out, kicked)
                   setGameState('gameover');
               }
 
-              // Update other players
+              // Update all players (including me)
               for (const pId in state.players) {
-                  if (pId === myId) continue;
-                  
                   const pState = state.players[pId];
-                  let localPlane = localPlanesRef.current[pId];
+                  let localPlane = localPlanes[pId];
                   
                   if (!localPlane) {
-                      const color = pState.isAI ? 0xff0000 : 0xffaa00; // AI red, other players orange
-                      const newPlaneMesh = createVoxelPlane(color);
-                      scene.add(newPlaneMesh);
-                      localPlanesRef.current[pId] = { mesh: newPlaneMesh, name: pState.name, isAI: pState.isAI };
-                      localPlane = localPlanesRef.current[pId];
+                      const mesh = pId === myId ? player : createVoxelPlane(pState.isAI ? 0xff0000 : 0xffaa00);
+                      if(pId !== myId) scene.add(mesh);
+                      localPlanes[pId] = { mesh, name: pState.name, isAI: pState.isAI };
+                      localPlane = localPlanes[pId];
                   }
 
                   localPlane.mesh.userData.serverPosition = new THREE.Vector3().fromArray(pState.position);
@@ -347,10 +339,10 @@ export default function Game({ mode, serverId: serverIdProp, playerName: playerN
               }
               
               // Remove stale local players
-              for (const localId in localPlanesRef.current) {
+              for (const localId in localPlanes) {
                   if (!allServerIds.has(localId)) {
-                      scene.remove(localPlanesRef.current[localId].mesh);
-                      delete localPlanesRef.current[localId];
+                      scene.remove(localPlanes[localId].mesh);
+                      delete localPlanes[localId];
                   }
               }
 
@@ -358,23 +350,23 @@ export default function Game({ mode, serverId: serverIdProp, playerName: playerN
               const allBulletIds = new Set(Object.keys(state.bullets));
               for(const bId in state.bullets) {
                   const bState = state.bullets[bId];
-                  if(!localBulletsRef.current[bId]) {
+                  if(!localBullets[bId]) {
                       const bulletGeo = new THREE.BoxGeometry(0.2, 0.2, 1);
                       const bulletMat = new THREE.MeshBasicMaterial({ color: 0xffff00 });
                       const bulletMesh = new THREE.Mesh(bulletGeo, bulletMat);
                       bulletMesh.position.fromArray(bState.position);
                       scene.add(bulletMesh);
-                      localBulletsRef.current[bId] = { id: bId, mesh: bulletMesh, spawnTime: performance.now() };
+                      localBullets[bId] = { id: bId, mesh: bulletMesh, spawnTime: performance.now() };
                   } else {
-                      localBulletsRef.current[bId].mesh.position.fromArray(bState.position);
-                      localBulletsRef.current[bId].spawnTime = performance.now();
+                      localBullets[bId].mesh.position.fromArray(bState.position);
+                      localBullets[bId].spawnTime = performance.now();
                   }
               }
               // Remove stale bullets
-              for (const localBId in localBulletsRef.current) {
+              for (const localBId in localBullets) {
                   if (!allBulletIds.has(localBId)) {
-                      scene.remove(localBulletsRef.current[localBId].mesh);
-                      delete localBulletsRef.current[localBId];
+                      scene.remove(localBullets[localBId].mesh);
+                      delete localBullets[localBId];
                   }
               }
 
@@ -401,6 +393,8 @@ export default function Game({ mode, serverId: serverIdProp, playerName: playerN
 
         const setupOfflineGame = () => {
             playerIdRef.current = 'offline_player';
+            player.position.set(0, 50, 0);
+            player.quaternion.set(0, 0, 0, 1);
             setGameState('menu');
         };
 
@@ -418,6 +412,7 @@ export default function Game({ mode, serverId: serverIdProp, playerName: playerN
         gameLoop(performance.now());
         
         return () => {
+            // This is the crucial cleanup function
             cancelAnimationFrame(animationFrameId);
             clearInterval(stateUpdateInterval);
             clearInterval(inputUpdateInterval);
@@ -431,11 +426,12 @@ export default function Game({ mode, serverId: serverIdProp, playerName: playerN
             if (mode === 'online' && serverIdProp && pid) {
                 GameActions.leaveServer(serverIdProp, pid);
             }
+
             if(mountRef.current && renderer.domElement) {
                 mountRef.current.removeChild(renderer.domElement);
             }
         };
-    }, []); // This effect should run only once.
+    }, [gameSessionId]); // This effect re-runs when gameSessionId changes
 
     const inviteLink = serverIdProp ? `${typeof window !== 'undefined' ? window.location.origin : ''}/online` : '';
 
@@ -500,7 +496,7 @@ export default function Game({ mode, serverId: serverIdProp, playerName: playerN
                 </div>
             )}
 
-            {showAltitudeWarning && gameState === 'playing' && (
+            {showAltitudeWarning && (
                 <div className="absolute top-1/3 left-1/2 -translate-x-1/2 z-20 text-center">
                     <Card className="bg-destructive/80 text-destructive-foreground p-4 border-2 border-destructive-foreground">
                         <CardTitle className="text-3xl font-bold">WARNING: ALTITUDE CRITICAL</CardTitle>
@@ -514,7 +510,7 @@ export default function Game({ mode, serverId: serverIdProp, playerName: playerN
                 </div>
             )}
 
-            {showBoundaryWarning && gameState === 'playing' && (
+            {showBoundaryWarning && (
                 <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 z-20 text-center">
                     <Card className="bg-destructive/80 text-destructive-foreground p-4 border-2 border-destructive-foreground">
                         <CardTitle className="text-3xl font-bold">WARNING: LEAVING BATTLEFIELD</CardTitle>
