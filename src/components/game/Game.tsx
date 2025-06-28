@@ -9,7 +9,7 @@ import HUD from '@/components/ui/HUD';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Loader2, Home } from 'lucide-react';
-import type { VoxelAcesState, Player, Bullet } from '@/server/rooms/state/VoxelAcesState';
+import type { VoxelAcesState, Player } from '@/server/rooms/state/VoxelAcesState';
 
 // Constants
 const BOUNDARY = 950;
@@ -62,14 +62,11 @@ export default function Game({ mode, playerName: playerNameProp }: GameProps) {
     const [showBoundaryWarning, setShowBoundaryWarning] = useState(false);
     const [boundaryWarningTimer, setBoundaryWarningTimer] = useState(7);
     const [whiteoutOpacity, setWhiteoutOpacity] = useState(0);
-
+    
     const [gameSessionId, setGameSessionId] = useState(0);
 
-    const keysPressed = useRef<Record<string, boolean>>({}).current;
-    
-    // Colyseus state
     const roomRef = useRef<Colyseus.Room<VoxelAcesState> | null>(null);
-    const clientRef = useRef<Colyseus.Client | null>(null);
+    const keysPressed = useRef<Record<string, boolean>>({}).current;
 
     const handleLeaveGame = useCallback(() => { 
       roomRef.current?.leave();
@@ -87,7 +84,6 @@ export default function Game({ mode, playerName: playerNameProp }: GameProps) {
         setShowBoundaryWarning(false);
         setBoundaryWarningTimer(7);
         setWhiteoutOpacity(0);
-        
         setGameSessionId(id => id + 1);
     }, []);
 
@@ -97,6 +93,7 @@ export default function Game({ mode, playerName: playerNameProp }: GameProps) {
         const mount = mountRef.current;
         let animationFrameId: number;
         let inputInterval: NodeJS.Timeout;
+        let client: Colyseus.Client;
 
         const localPlanes: Record<string, THREE.Group> = {};
         const localBullets: Record<string, THREE.Mesh> = {};
@@ -116,7 +113,6 @@ export default function Game({ mode, playerName: playerNameProp }: GameProps) {
             renderer.setSize(mount.clientWidth, mount.clientHeight);
         };
         handleResize();
-        window.addEventListener('resize', handleResize);
         
         const ambientLight = new THREE.AmbientLight(0xffffff, 0.7);
         scene.add(ambientLight);
@@ -131,11 +127,10 @@ export default function Game({ mode, playerName: playerNameProp }: GameProps) {
         ground.position.y = -50;
         scene.add(ground);
         
+        // Simplified scenery for brevity
         const scenery = new THREE.Group();
-        for (let i = 0; i < 75; i++) { /* ... scenery ... */ }
         scene.add(scenery);
         const cloudLayer = new THREE.Group();
-        for (let i = 0; i < 150; i++) { /* ... clouds ... */ }
         scene.add(cloudLayer);
 
         let lastTime = 0;
@@ -152,8 +147,7 @@ export default function Game({ mode, playerName: playerNameProp }: GameProps) {
                 const currentAltitude = myPlane.position.y - ground.position.y;
                 setAltitude(currentAltitude);
                 
-                // altitude warning
-                 let altWarn = false;
+                let altWarn = false;
                 if (currentAltitude > MAX_ALTITUDE) {
                     altWarn = true;
                     setAltitudeWarningTimer(t => Math.max(0, t - delta));
@@ -165,16 +159,14 @@ export default function Game({ mode, playerName: playerNameProp }: GameProps) {
                 }
                 setShowAltitudeWarning(altWarn && gameStatus === 'playing');
 
-                // boundary warning
                 let boundaryWarn = false;
                 if (Math.abs(myPlane.position.x) > BOUNDARY || Math.abs(myPlane.position.z) > BOUNDARY) {
                    boundaryWarn = true;
                    setBoundaryWarningTimer(t => Math.max(0, t - delta));
-               } else {
+                } else {
                    setBoundaryWarningTimer(7);
-               }
-               setShowBoundaryWarning(boundaryWarn && gameStatus === 'playing');
-
+                }
+                setShowBoundaryWarning(boundaryWarn && gameStatus === 'playing');
 
                 const cameraOffset = new THREE.Vector3(0, 8, 15);
                 const idealOffset = cameraOffset.clone().applyQuaternion(myPlane.quaternion);
@@ -195,12 +187,17 @@ export default function Game({ mode, playerName: playerNameProp }: GameProps) {
             try {
                 const protocol = window.location.protocol === "https:" ? "wss" : "ws";
                 const endpoint = `${protocol}://${window.location.host}`;
-                clientRef.current = new Colyseus.Client(endpoint);
+                client = new Colyseus.Client(endpoint);
                 
-                roomRef.current = await clientRef.current.joinOrCreate<VoxelAcesState>("voxel_aces_room", { playerName: playerNameProp });
+                roomRef.current = await client.joinOrCreate<VoxelAcesState>("voxel_aces_room", { playerName: playerNameProp });
                 setGameStatus('playing');
 
-                // Player listeners
+                roomRef.current.onLeave(() => {
+                    // This can happen if the server shuts down or the player is kicked.
+                    console.log("Disconnected from room.");
+                    setGameStatus('gameover'); 
+                });
+
                 roomRef.current.state.players.onAdd((player, sessionId) => {
                     const isMe = sessionId === roomRef.current?.sessionId;
                     const color = isMe ? 0x0077ff : 0xffaa00;
@@ -212,9 +209,9 @@ export default function Game({ mode, playerName: playerNameProp }: GameProps) {
                     localPlanes[sessionId] = planeMesh;
                     scene.add(planeMesh);
 
-                    player.onChange = (changes) => {
-                        planeMesh.position.lerp(new THREE.Vector3(player.x, player.y, player.z), 0.3);
-                        planeMesh.quaternion.slerp(new THREE.Quaternion(player.qx, player.qy, player.qz, player.qw), 0.3);
+                    player.onChange = () => {
+                        planeMesh.position.lerp(new THREE.Vector3(player.x, player.y, player.z), 0.2);
+                        planeMesh.quaternion.slerp(new THREE.Quaternion(player.qx, player.qy, player.qz, player.qw), 0.2);
                         
                         if(isMe) {
                             setPlayerHealth(player.health);
@@ -227,11 +224,12 @@ export default function Game({ mode, playerName: playerNameProp }: GameProps) {
                 });
                 
                 roomRef.current.state.players.onRemove((player, sessionId) => {
-                    scene.remove(localPlanes[sessionId]);
-                    delete localPlanes[sessionId];
+                    if (localPlanes[sessionId]) {
+                        scene.remove(localPlanes[sessionId]);
+                        delete localPlanes[sessionId];
+                    }
                 });
 
-                // Bullet listeners
                 roomRef.current.state.bullets.onAdd((bullet, bulletId) => {
                     const bulletGeo = new THREE.BoxGeometry(0.2, 0.2, 1);
                     const bulletMat = new THREE.MeshBasicMaterial({ color: 0xffff00 });
@@ -244,12 +242,14 @@ export default function Game({ mode, playerName: playerNameProp }: GameProps) {
                         bulletMesh.position.set(bullet.x, bullet.y, bullet.z);
                     }
                 });
+                
                 roomRef.current.state.bullets.onRemove((bullet, bulletId) => {
-                    scene.remove(localBullets[bulletId]);
-                    delete localBullets[bulletId];
+                    if(localBullets[bulletId]) {
+                        scene.remove(localBullets[bulletId]);
+                        delete localBullets[bulletId];
+                    }
                 });
 
-                // Input sending interval
                 inputInterval = setInterval(() => {
                     if (roomRef.current) {
                         const playerInput = {
@@ -269,20 +269,23 @@ export default function Game({ mode, playerName: playerNameProp }: GameProps) {
         if (mode === 'online') {
             connect();
         } else {
-            // Offline mode setup
-            setGameStatus('menu');
+            // Offline mode setup (can be expanded later)
+            setGameStatus('menu'); 
         }
 
         window.addEventListener('keydown', handleKeyDown);
         window.addEventListener('keyup', handleKeyUp);
         window.addEventListener('mousedown', handleMouseDown);
         window.addEventListener('mouseup', handleMouseUp);
+        window.addEventListener('resize', handleResize);
         
         gameLoop(performance.now());
         
         return () => {
+            // Cleanup logic
             cancelAnimationFrame(animationFrameId);
-            clearInterval(inputInterval);
+            if (inputInterval) clearInterval(inputInterval);
+            
             window.removeEventListener('keydown', handleKeyDown);
             window.removeEventListener('keyup', handleKeyUp);
             window.removeEventListener('mousedown', handleMouseDown);
@@ -290,12 +293,18 @@ export default function Game({ mode, playerName: playerNameProp }: GameProps) {
             window.removeEventListener('resize', handleResize);
             
             roomRef.current?.leave();
+            roomRef.current = null;
 
-            if(mountRef.current && renderer.domElement) {
-                mountRef.current.removeChild(renderer.domElement);
+            // Clear Three.js scene
+            Object.values(localPlanes).forEach(plane => scene.remove(plane));
+            Object.values(localBullets).forEach(bullet => scene.remove(bullet));
+
+            if(mount && renderer.domElement) {
+                mount.removeChild(renderer.domElement);
             }
+            renderer.dispose();
         };
-    }, [gameSessionId]);
+    }, [gameSessionId, mode, playerNameProp, router, gameStatus]); // gameStatus is important here
 
     return (
         <div className="relative w-screen h-screen bg-background overflow-hidden" onContextMenu={(e) => e.preventDefault()}>
@@ -313,7 +322,7 @@ export default function Game({ mode, playerName: playerNameProp }: GameProps) {
                 </div>
             )}
             
-            {gameStatus === 'playing' && mode === 'online' && (
+            {gameStatus === 'playing' && (
                  <div className="absolute top-4 right-4 z-20">
                     <Button onClick={handleLeaveGame} variant="outline" size="icon" className="h-10 w-10 rounded-full bg-black/30 text-white border-primary/50 backdrop-blur-sm hover:bg-destructive/50">
                         <Home className="h-5 w-5"/>
@@ -358,7 +367,9 @@ export default function Game({ mode, playerName: playerNameProp }: GameProps) {
                 </div>
             )}
             
-            {gameStatus === 'playing' && <HUD score={score} wave={wave} health={playerHealth} overheat={0} altitude={altitude} mode={mode} serverId={roomRef.current?.id} players={roomRef.current?.state.players} />}
+            {gameStatus === 'playing' && roomRef.current && (
+                 <HUD score={score} wave={wave} health={playerHealth} overheat={0} altitude={altitude} mode={mode} serverId={roomRef.current.id} players={roomRef.current.state.players} />
+            )}
 
             {gameStatus === 'gameover' && (
                 <div className="absolute inset-0 flex items-center justify-center bg-black/50 z-10">
