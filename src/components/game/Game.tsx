@@ -17,6 +17,13 @@ let hasActiveJoinRequest = false;
 // Constants
 const BOUNDARY = 950;
 const MAX_ALTITUDE = 220;
+const GROUND_Y = -50;
+
+// Shared physics constants (from server)
+const BASE_SPEED = 60;
+const BOOST_MULTIPLIER = 2.0;
+const PITCH_SPEED = 7.0;
+const ROLL_SPEED = 7.0;
 
 const createVoxelPlane = (color: THREE.ColorRepresentation) => {
     const plane = new THREE.Group();
@@ -60,7 +67,8 @@ export default function Game({ mode, playerName: playerNameProp }: GameProps) {
         _setGameStatus(status);
     }
     const [_gameStatus, _setGameStatus] = useState<GameStatus>('loading');
-
+    
+    const playerPlaneRef = useRef<THREE.Group | null>(null);
 
     const [score, setScore] = useState(0);
     const [wave, setWave] = useState(1);
@@ -99,6 +107,12 @@ export default function Game({ mode, playerName: playerNameProp }: GameProps) {
         const localPlanes: Record<string, THREE.Group> = {};
         const localBullets: Record<string, THREE.Mesh> = {};
 
+        // Offline player physics state
+        const offlinePlayer = {
+            position: new THREE.Vector3(0, 50, 0),
+            quaternion: new THREE.Quaternion(),
+        };
+
         const scene = new THREE.Scene();
         scene.background = new THREE.Color(0x87CEEB); 
         scene.fog = new THREE.Fog(0x87CEEB, 1000, 2500);
@@ -125,13 +139,70 @@ export default function Game({ mode, playerName: playerNameProp }: GameProps) {
         const groundMat = new THREE.MeshLambertMaterial({ color: 0x4A6B3A, flatShading: true });
         const ground = new THREE.Mesh(groundGeo, groundMat);
         ground.rotation.x = -Math.PI / 2;
-        ground.position.y = -50;
+        ground.position.y = GROUND_Y;
         scene.add(ground);
         
         const scenery = new THREE.Group();
         scene.add(scenery);
         const cloudLayer = new THREE.Group();
         scene.add(cloudLayer);
+
+        const createMountain = () => {
+            const mountain = new THREE.Group();
+            const layers = Math.floor(Math.random() * 5) + 3;
+            let baseRadius = Math.random() * 50 + 40;
+            let currentY = GROUND_Y;
+
+            for (let i = 0; i < layers; i++) {
+                const height = Math.random() * 30 + 20;
+                const radius = baseRadius * ((layers - i) / layers);
+                const geo = new THREE.CylinderGeometry(radius * 0.7, radius, height, 8);
+                const mat = new THREE.MeshLambertMaterial({ color: 0x6A6A6A, flatShading: true });
+                const mesh = new THREE.Mesh(geo, mat);
+                mesh.position.y = currentY + height / 2;
+                mountain.add(mesh);
+                currentY += height * 0.8;
+            }
+            return mountain;
+        }
+
+        for (let i = 0; i < 20; i++) {
+            const mountain = createMountain();
+            mountain.position.set(
+                (Math.random() - 0.5) * 1800,
+                0,
+                (Math.random() - 0.5) * 1800
+            );
+            scenery.add(mountain);
+        }
+
+        const createCloud = () => {
+            const cloud = new THREE.Group();
+            const mat = new THREE.MeshBasicMaterial({ color: 0xffffff, opacity: 0.8, transparent: true });
+            const puffCount = Math.floor(Math.random() * 5) + 3;
+            for(let i = 0; i < puffCount; i++) {
+                const size = Math.random() * 40 + 20;
+                const puffGeo = new THREE.BoxGeometry(size, size, size);
+                const puff = new THREE.Mesh(puffGeo, mat);
+                puff.position.set(
+                    (Math.random() - 0.5) * 60,
+                    (Math.random() - 0.5) * 20,
+                    (Math.random() - 0.5) * 60
+                );
+                cloud.add(puff);
+            }
+            return cloud;
+        }
+
+        for (let i = 0; i < 50; i++) {
+            const cloud = createCloud();
+            cloud.position.set(
+                (Math.random() - 0.5) * 1800,
+                Math.random() * 100 + 80, // altitude
+                (Math.random() - 0.5) * 1800
+            );
+            cloudLayer.add(cloud);
+        }
 
         let lastTime = 0;
 
@@ -141,7 +212,43 @@ export default function Game({ mode, playerName: playerNameProp }: GameProps) {
             lastTime = time;
             
             const myId = roomRef.current?.sessionId;
-            const myPlane = myId ? localPlanes[myId] : null;
+            let myPlane: THREE.Group | null = null;
+
+            if (mode === 'online') {
+                myPlane = myId ? localPlanes[myId] : null;
+            } else {
+                myPlane = playerPlaneRef.current;
+            }
+            
+            // --- OFFLINE MODE LOGIC ---
+            if (mode === 'offline' && gameStatusRef.current === 'playing') {
+                if (!myPlane) {
+                    // Initialize offline game
+                    const planeMesh = createVoxelPlane(0x0077ff);
+                    planeMesh.position.copy(offlinePlayer.position);
+                    scene.add(planeMesh);
+                    playerPlaneRef.current = planeMesh;
+                    myPlane = planeMesh;
+                }
+                
+                const input = {
+                    w: !!keysPressed['w'], s: !!keysPressed['s'], a: !!keysPressed['a'], d: !!keysPressed['d'],
+                    shift: !!keysPressed['shift'],
+                };
+
+                if (input.w) offlinePlayer.quaternion.multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), -PITCH_SPEED * delta));
+                if (input.s) offlinePlayer.quaternion.multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), PITCH_SPEED * delta));
+                if (input.a) offlinePlayer.quaternion.multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 0, 1), ROLL_SPEED * delta));
+                if (input.d) offlinePlayer.quaternion.multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 0, 1), -ROLL_SPEED * delta));
+
+                const speed = input.shift ? BASE_SPEED * BOOST_MULTIPLIER : BASE_SPEED;
+                const forward = new THREE.Vector3(0, 0, -1).applyQuaternion(offlinePlayer.quaternion);
+                offlinePlayer.position.add(forward.multiplyScalar(speed * delta));
+
+                myPlane.position.copy(offlinePlayer.position);
+                myPlane.quaternion.copy(offlinePlayer.quaternion);
+            }
+            // --- END OFFLINE MODE LOGIC ---
 
             if (gameStatusRef.current === 'playing' && myPlane) {
                 const currentAltitude = myPlane.position.y - ground.position.y;
@@ -260,7 +367,7 @@ export default function Game({ mode, playerName: playerNameProp }: GameProps) {
                         scene.remove(localBullets[bulletId]);
                         delete localBullets[bulletId];
                     }
-                });
+});
 
                 inputInterval = setInterval(() => {
                     if (roomRef.current) {
@@ -295,11 +402,6 @@ export default function Game({ mode, playerName: playerNameProp }: GameProps) {
             if (inputInterval) clearInterval(inputInterval);
             
             roomRef.current?.leave();
-            //
-            // FIX: Do not reset `hasActiveJoinRequest` here.
-            // It is reset in the .finally() block of the promise, which is sufficient.
-            // Resetting it here causes a race condition in React.StrictMode.
-            //
             
             window.removeEventListener('keydown', handleKeyDown);
             window.removeEventListener('keyup', handleKeyUp);
@@ -309,6 +411,7 @@ export default function Game({ mode, playerName: playerNameProp }: GameProps) {
             
             Object.values(localPlanes).forEach(plane => scene.remove(plane));
             Object.values(localBullets).forEach(bullet => scene.remove(bullet));
+            if(playerPlaneRef.current) scene.remove(playerPlaneRef.current);
 
             if(mountRef.current && renderer.domElement && mountRef.current.contains(renderer.domElement)) {
                 mountRef.current.removeChild(renderer.domElement);
@@ -378,9 +481,11 @@ export default function Game({ mode, playerName: playerNameProp }: GameProps) {
                 </div>
             )}
             
-            {_gameStatus === 'playing' && roomRef.current && roomRef.current.state.players && (
+            {_gameStatus === 'playing' && roomRef.current && roomRef.current.state.players ? (
                  <HUD score={score} wave={wave} health={playerHealth} overheat={0} altitude={altitude} mode={mode} serverId={roomRef.current.id} players={roomRef.current.state.players} />
-            )}
+            ) : _gameStatus === 'playing' && mode === 'offline' ? (
+                 <HUD score={score} wave={wave} health={playerHealth} overheat={0} altitude={altitude} mode={mode} />
+            ): null}
 
             {_gameStatus === 'gameover' && (
                 <div className="absolute inset-0 flex items-center justify-center bg-black/50 z-10">
