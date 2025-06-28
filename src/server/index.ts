@@ -23,10 +23,10 @@ nextApp.prepare().then(() => {
 
   const server = http.createServer(app);
   
-  // Use `noServer: true` to prevent Colyseus from hijacking the 'upgrade' event
+  // Attach Colyseus to the existing HTTP server
   const gameServer = new Server({
     transport: new WebSocketTransport({
-      noServer: true
+      server // Attach to the main http server
     }),
   });
 
@@ -35,27 +35,14 @@ nextApp.prepare().then(() => {
 
   // Handle all regular HTTP requests with Next.js
   app.all('*', (req, res) => {
-    return handle(req, res);
+    // Be sure to pass `true` as the second argument to `url.parse`.
+    // This tells it to parse the query portion of the URL.
+    const parsedUrl = parse(req.url!, true);
+    return handle(req, res, parsedUrl);
   });
   
-  // Manually handle WebSocket upgrades
-  server.on('upgrade', (request, socket, head) => {
-    const { pathname } = parse(request.url!, true);
-
-    // Delegate to Colyseus only for the '/colyseus' path
-    if (pathname === '/colyseus') {
-      gameServer.transport.handleUpgrade(request, socket, head, (client) => {
-        gameServer.onConnection(client, request);
-      });
-    } else {
-      // Let Next.js's internal WebSocket server handle its own connections.
-      // By not destroying the socket here, we allow other listeners to process it.
-    }
-  });
-
-
   server.listen(port, () => {
     console.log(`> Next.js server ready on http://localhost:${port}`);
-    console.log(`> Colyseus server listening on ws://localhost:${port}/colyseus`);
+    console.log(`> Colyseus server listening on ws://localhost:${port}`);
   });
 });
