@@ -42,41 +42,49 @@ export default function ServerLeaderboard({ players: playersMap }: ServerLeaderb
     // Initial update
     updateLeaderboard();
 
-    // Map to store listeners for each player
-    const playerListeners = new Map<string, any[]>();
+    // This map will store an array of cleanup functions for each player.
+    const playerCleanupCallbacks = new Map<string, Array<() => void>>();
 
     const addPlayerListeners = (player: PlayerState, id: string) => {
-        // listen for changes on individual player properties
-        const listeners = [
-            player.listen("kills", updateLeaderboard),
-            player.listen("name", updateLeaderboard),
-        ];
-        playerListeners.set(id, listeners);
+        const killsListener = player.listen("kills", updateLeaderboard);
+        const nameListener = player.listen("name", updateLeaderboard);
+
+        // Store the cleanup functions for this player.
+        playerCleanupCallbacks.set(id, [
+            () => killsListener.clear(),
+            () => nameListener.clear(),
+        ]);
     };
 
-    // Setup listeners for existing players
+    // Setup for existing players
     playersMap.forEach(addPlayerListeners);
 
-    // Setup listeners for players added in the future
+    // Setup for new players
     const onAdd = playersMap.onAdd((player, id) => {
         addPlayerListeners(player, id);
         updateLeaderboard();
     });
 
-    // Setup listeners for players removed in the future
+    // Setup for removed players
     const onRemove = playersMap.onRemove((_, id) => {
-        if (playerListeners.has(id)) {
-            playerListeners.get(id)?.forEach(l => l.clear());
-            playerListeners.delete(id);
+        // Run and remove the cleanup functions for the player who left.
+        if (playerCleanupCallbacks.has(id)) {
+            playerCleanupCallbacks.get(id)?.forEach(cb => cb());
+            playerCleanupCallbacks.delete(id);
         }
         updateLeaderboard();
     });
 
-    // Cleanup function
+    // Cleanup when component unmounts
     return () => {
+        // Unregister onAdd and onRemove
         onAdd();
         onRemove();
-        playerListeners.forEach(listeners => listeners.forEach(l => l.clear()));
+
+        // Run all remaining cleanup functions for players still in the game
+        playerCleanupCallbacks.forEach(callbacks => {
+            callbacks.forEach(cb => cb());
+        });
     }
 
   }, [playersMap, isMobile]);
