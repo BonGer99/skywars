@@ -40,12 +40,12 @@ nextApp.prepare().then(() => {
   
   // Manually handle WebSocket upgrades
   server.on('upgrade', (request, socket, head) => {
-    const { pathname } = parse(request.url, true);
+    const { pathname } = parse(request.url!, true);
 
     // Delegate to Colyseus only for the '/colyseus' path
     if (pathname === '/colyseus') {
-      gameServer.transport.server.handleUpgrade(request, socket, head, (ws) => {
-        gameServer.transport.server.emit('connection', ws, request);
+      gameServer.transport.handleUpgrade(request, socket, head, (client) => {
+        gameServer.onConnection(client, request);
       });
     } else {
       // Let Next.js's internal WebSocket server handle its own connections.
