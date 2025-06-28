@@ -4,10 +4,11 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "next dev --turbopack",
+    "dev": "npm run server:dev & next dev --turbopack",
     "server:dev": "tsx --watch src/server/index.ts",
-    "build": "next build",
-    "start": "next start",
+    "build:server": "tsc -p tsconfig.server.json",
+    "build": "npm run build:server && next build",
+    "start": "node dist/server/index.js & next start",
     "lint": "next lint",
     "typecheck": "tsc --noEmit"
   },
