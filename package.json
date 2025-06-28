@@ -4,7 +4,7 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "tsx --watch src/server/index.ts",
+    "dev": "tsx --watch src/server/index.ts --ignore .next/**",
     "build": "next build && tsc -p tsconfig.server.json",
     "start": "NODE_ENV=production node dist/server/index.js",
     "lint": "next lint",
