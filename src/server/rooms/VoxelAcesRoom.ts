@@ -15,10 +15,20 @@ const BULLET_SPEED = 200;
 const BULLET_LIFESPAN_MS = 5000;
 const PLAYER_HEALTH = 100;
 
+interface ServerPlayerData {
+    position: THREE.Vector3;
+    quaternion: THREE.Quaternion;
+    input: any;
+    gunCooldown: number;
+    gunOverheat: number;
+    boundaryTimer: number;
+    altitudeTimer: number;
+}
+
 export class VoxelAcesRoom extends Room<VoxelAcesState> {
     maxClients = 16;
     
-    serverPlayers: Map<string, { position: THREE.Vector3, quaternion: THREE.Quaternion, input: any, gunCooldown: number, gunOverheat: number }> = new Map();
+    serverPlayers: Map<string, ServerPlayerData> = new Map();
     serverBullets: Map<string, { position: THREE.Vector3, velocity: THREE.Vector3, spawnTime: number, ownerId: string }> = new Map();
 
     onCreate(options: any) {
@@ -51,6 +61,8 @@ export class VoxelAcesRoom extends Room<VoxelAcesState> {
                 serverPlayer.quaternion.set(0, 0, 0, 1);
                 serverPlayer.gunCooldown = 0;
                 serverPlayer.gunOverheat = 0;
+                serverPlayer.boundaryTimer = 7;
+                serverPlayer.altitudeTimer = 5;
             }
         });
     }
@@ -73,7 +85,9 @@ export class VoxelAcesRoom extends Room<VoxelAcesState> {
             quaternion: new THREE.Quaternion(),
             input: {},
             gunCooldown: 0,
-            gunOverheat: 0
+            gunOverheat: 0,
+            boundaryTimer: 7,
+            altitudeTimer: 5,
         });
     }
 
@@ -141,8 +155,23 @@ export class VoxelAcesRoom extends Room<VoxelAcesState> {
                 });
             }
             
-            // Boundary checks (authoritative)
-            if (player.y < GROUND_Y || Math.abs(player.x) > BOUNDARY || Math.abs(player.z) > BOUNDARY || player.y > MAX_ALTITUDE) {
+            // Authoritative Boundary & Altitude Checks
+            const inBoundaryViolation = Math.abs(player.x) > BOUNDARY || Math.abs(player.z) > BOUNDARY;
+            const inAltitudeViolation = player.y > MAX_ALTITUDE;
+
+            if (inBoundaryViolation) {
+                serverPlayer.boundaryTimer = Math.max(0, serverPlayer.boundaryTimer - delta);
+            } else {
+                serverPlayer.boundaryTimer = 7;
+            }
+
+            if (inAltitudeViolation) {
+                serverPlayer.altitudeTimer = Math.max(0, serverPlayer.altitudeTimer - delta);
+            } else {
+                serverPlayer.altitudeTimer = 5;
+            }
+            
+            if (player.y < GROUND_Y || serverPlayer.boundaryTimer <= 0 || serverPlayer.altitudeTimer <= 0) {
                 if (player.health > 0) player.health = 0;
             }
         });

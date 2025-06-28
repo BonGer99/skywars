@@ -21,6 +21,7 @@ const PITCH_SPEED = 2.5;
 const ROLL_SPEED = 2.5;
 const BULLET_SPEED = 200;
 const BULLET_LIFESPAN_MS = 5000;
+const INTERPOLATION_FACTOR = 0.2;
 
 const createVoxelPlane = (color: THREE.ColorRepresentation) => {
     const plane = new THREE.Group();
@@ -58,6 +59,7 @@ export default function Game({ mode, playerName: playerNameProp }: GameProps) {
     const mountRef = useRef<HTMLDivElement>(null);
     const router = useRouter();
     const roomRef = useRef<Colyseus.Room<VoxelAcesState> | null>(null);
+    const isConnectingRef = useRef(false);
 
     const gameStatusRef = useRef<GameStatus>(mode === 'offline' ? 'menu' : 'loading');
     const [_gameStatus, _setGameStatus] = useState<GameStatus>(gameStatusRef.current);
@@ -74,14 +76,19 @@ export default function Game({ mode, playerName: playerNameProp }: GameProps) {
     const [playerHealth, setPlayerHealth] = useState(100);
     const [altitude, setAltitude] = useState(0);
     const [gunOverheat, setGunOverheat] = useState(0);
+    
+    // Warning Timers (State for UI, Ref for logic)
     const [showAltitudeWarning, setShowAltitudeWarning] = useState(false);
     const [altitudeWarningTimer, setAltitudeWarningTimer] = useState(5);
+    const altitudeWarningTimerRef = useRef(5);
+
     const [showBoundaryWarning, setShowBoundaryWarning] = useState(false);
     const [boundaryWarningTimer, setBoundaryWarningTimer] = useState(7);
+    const boundaryWarningTimerRef = useRef(7);
+    
     const [whiteoutOpacity, setWhiteoutOpacity] = useState(0);
 
     const handleLeaveGame = useCallback(() => {
-      // The useEffect cleanup will handle room leaving
       router.push('/');
     }, [router]);
 
@@ -188,6 +195,9 @@ export default function Game({ mode, playerName: playerNameProp }: GameProps) {
 
             // ======== ONLINE SETUP ========
             if (mode === 'online') {
+                if (isConnectingRef.current) return;
+                isConnectingRef.current = true;
+
                 try {
                     const protocol = window.location.protocol === "https:" ? "wss" : "ws";
                     const endpoint = `${protocol}://${window.location.host}`;
@@ -197,6 +207,7 @@ export default function Game({ mode, playerName: playerNameProp }: GameProps) {
                     roomRef.current = room;
 
                     setGameStatus('playing');
+                    isConnectingRef.current = false;
 
                     room.onLeave(() => {
                         if (isMounted) {
@@ -216,23 +227,17 @@ export default function Game({ mode, playerName: playerNameProp }: GameProps) {
                         localPlanes[sessionId] = planeMesh;
                         scene.add(planeMesh);
 
-                        player.onChange = () => {
-                            if (!localPlanes[sessionId]) return;
-                            localPlanes[sessionId].position.set(player.x, player.y, player.z);
-                            localPlanes[sessionId].quaternion.set(player.qx, player.qy, player.qz, player.qw);
-                            
-                            if (isMe) {
-                                setPlayerHealth(player.health);
-                                setScore(player.kills);
-                                setGunOverheat(player.gunOverheat);
+                        if(isMe) {
+                            player.listen("health", (currentValue) => setPlayerHealth(currentValue));
+                            player.listen("kills", (currentValue) => setScore(currentValue));
+                            player.listen("gunOverheat", (currentValue) => setGunOverheat(currentValue));
 
-                                if (player.health <= 0 && gameStatusRef.current === 'playing') {
+                            player.listen("health", (currentValue) => {
+                                if (currentValue <= 0 && gameStatusRef.current === 'playing') {
                                     setGameStatus('gameover');
-                                } else if (player.health > 0 && gameStatusRef.current === 'gameover') {
-                                    setGameStatus('playing');
                                 }
-                            }
-                        };
+                            });
+                        }
                     });
                     
                     room.state.players.onRemove((_, sessionId) => {
@@ -249,10 +254,6 @@ export default function Game({ mode, playerName: playerNameProp }: GameProps) {
                         bulletMesh.position.set(bullet.x, bullet.y, bullet.z);
                         localBullets[bulletId] = bulletMesh;
                         scene.add(bulletMesh);
-
-                        bullet.onChange = () => {
-                            if (bulletMesh) bulletMesh.position.set(bullet.x, bullet.y, bullet.z);
-                        }
                     });
                     
                     room.state.bullets.onRemove((_, bulletId) => {
@@ -263,17 +264,18 @@ export default function Game({ mode, playerName: playerNameProp }: GameProps) {
                     });
 
                     inputInterval = setInterval(() => {
-                        if (room && gameStatusRef.current === 'playing') {
+                        if (roomRef.current && gameStatusRef.current === 'playing') {
                             const playerInput = {
                                 w: !!keysPressed['w'], s: !!keysPressed['s'], a: !!keysPressed['a'], d: !!keysPressed['d'],
                                 shift: !!keysPressed['shift'], space: !!keysPressed[' '], mouse0: !!keysPressed['mouse0'],
                             };
-                            room.send("input", playerInput);
+                            roomRef.current.send("input", playerInput);
                         }
                     }, 1000 / 20); // 20hz
 
                 } catch (e) {
                     console.error("JOIN ERROR", e);
+                    isConnectingRef.current = false;
                     router.push('/online');
                 }
             }
@@ -310,15 +312,11 @@ export default function Game({ mode, playerName: playerNameProp }: GameProps) {
                 }
                 
                 let myPlane: THREE.Group | null = null;
-                const myId = roomRef.current?.sessionId;
-                if (mode === 'online') {
-                    myPlane = myId ? localPlanes[myId] : null;
-                } else {
-                    myPlane = localPlanes['offline_player'];
-                }
-
+                
                 // --- OFFLINE MODE LOGIC ---
                 if (mode === 'offline') {
+                    myPlane = localPlanes['offline_player'];
+
                     const input = {
                         w: !!keysPressed['w'], s: !!keysPressed['s'], a: !!keysPressed['a'], d: !!keysPressed['d'],
                         shift: !!keysPressed['shift'], space: !!keysPressed[' '], mouse0: !!keysPressed['mouse0'],
@@ -348,15 +346,17 @@ export default function Game({ mode, playerName: playerNameProp }: GameProps) {
 
                         const bulletId = Math.random().toString(36).substring(2, 15);
                         const bulletVelocity = new THREE.Vector3(0, 0, -BULLET_SPEED).applyQuaternion(offlinePlayer.quaternion);
-                        const bullet = { id: bulletId, position: myPlane.position.clone(), velocity: bulletVelocity, spawnTime: time };
-                        localOfflineBullets.push(bullet);
-                
-                        const bulletGeo = new THREE.BoxGeometry(0.2, 0.2, 1);
-                        const bulletMat = new THREE.MeshBasicMaterial({ color: 0xffff00 });
-                        const bulletMesh = new THREE.Mesh(bulletGeo, bulletMat);
-                        bulletMesh.position.copy(bullet.position);
-                        localOfflineBulletMeshes[bulletId] = bulletMesh;
-                        scene.add(bulletMesh);
+                        if (myPlane) {
+                            const bullet = { id: bulletId, position: myPlane.position.clone(), velocity: bulletVelocity, spawnTime: time };
+                            localOfflineBullets.push(bullet);
+                    
+                            const bulletGeo = new THREE.BoxGeometry(0.2, 0.2, 1);
+                            const bulletMat = new THREE.MeshBasicMaterial({ color: 0xffff00 });
+                            const bulletMesh = new THREE.Mesh(bulletGeo, bulletMat);
+                            bulletMesh.position.copy(bullet.position);
+                            localOfflineBulletMeshes[bulletId] = bulletMesh;
+                            scene.add(bulletMesh);
+                        }
                     }
 
                     // Update local offline bullets
@@ -375,41 +375,72 @@ export default function Game({ mode, playerName: playerNameProp }: GameProps) {
                         }
                     }
                     
-                    // Offline death check
-                    setPlayerHealth(offlinePlayer.health);
-                    if ( myPlane && (myPlane.position.y < GROUND_Y || altitudeWarningTimer <= 0 || boundaryWarningTimer <= 0) ) {
-                        offlinePlayer.health = 0;
-                        setPlayerHealth(0);
-                        setGameStatus('gameover');
+                    if ( myPlane && (myPlane.position.y < GROUND_Y || boundaryWarningTimerRef.current <= 0 || altitudeWarningTimerRef.current <= 0) ) {
+                         if (offlinePlayer.health > 0) {
+                            offlinePlayer.health = 0;
+                            setPlayerHealth(0);
+                            setGameStatus('gameover');
+                         }
                     }
                 }
 
+                // --- ONLINE MODE LOGIC ---
+                if (mode === 'online' && roomRef.current) {
+                    const myId = roomRef.current.sessionId;
+                    myPlane = localPlanes[myId] || null;
+
+                    // Interpolate all player positions
+                    roomRef.current.state.players.forEach((player, sessionId) => {
+                        const planeMesh = localPlanes[sessionId];
+                        if(planeMesh) {
+                            const newPos = new THREE.Vector3(player.x, player.y, player.z);
+                            const newQuat = new THREE.Quaternion(player.qx, player.qy, player.qz, player.qw);
+                            planeMesh.position.lerp(newPos, INTERPOLATION_FACTOR);
+                            planeMesh.quaternion.slerp(newQuat, INTERPOLATION_FACTOR);
+                        }
+                    });
+
+                    // Update online bullets
+                    roomRef.current.state.bullets.forEach((bullet, bulletId) => {
+                        const bulletMesh = localBullets[bulletId];
+                        if (bulletMesh) {
+                            bulletMesh.position.set(bullet.x, bullet.y, bullet.z);
+                        }
+                    });
+                }
+
+
                 // --- SHARED LOGIC (CAMERA, WARNINGS) ---
                 if (myPlane) {
-                    const currentAltitude = myPlane.position.y - ground.position.y;
+                    const currentAltitude = myPlane.position.y - GROUND_Y;
                     setAltitude(currentAltitude);
                     
+                    // Altitude Warning
                     let altWarn = false;
                     if (currentAltitude > MAX_ALTITUDE) {
                         altWarn = true;
-                        setAltitudeWarningTimer(t => Math.max(0, t - delta));
-                        const opacity = Math.max(0, 1 - (altitudeWarningTimer / 5));
+                        altitudeWarningTimerRef.current = Math.max(0, altitudeWarningTimerRef.current - delta);
+                        const opacity = Math.max(0, 1 - (altitudeWarningTimerRef.current / 5));
                         setWhiteoutOpacity(opacity);
                     } else {
-                        setAltitudeWarningTimer(5);
+                        altitudeWarningTimerRef.current = 5;
                         setWhiteoutOpacity(0);
                     }
                     setShowAltitudeWarning(altWarn && gameStatusRef.current === 'playing');
+                    setAltitudeWarningTimer(altitudeWarningTimerRef.current);
 
+                    // Boundary Warning
                     let boundaryWarn = false;
                     if (Math.abs(myPlane.position.x) > BOUNDARY || Math.abs(myPlane.position.z) > BOUNDARY) {
                        boundaryWarn = true;
-                       setBoundaryWarningTimer(t => Math.max(0, t - delta));
+                       boundaryWarningTimerRef.current = Math.max(0, boundaryWarningTimerRef.current - delta);
                     } else {
-                       setBoundaryWarningTimer(7);
+                       boundaryWarningTimerRef.current = 7;
                     }
                     setShowBoundaryWarning(boundaryWarn && gameStatusRef.current === 'playing');
+                    setBoundaryWarningTimer(boundaryWarningTimerRef.current);
 
+                    // Camera
                     const cameraOffset = new THREE.Vector3(0, 8, 15);
                     const idealOffset = cameraOffset.clone().applyQuaternion(myPlane.quaternion);
                     const idealPosition = myPlane.position.clone().add(idealOffset);
@@ -431,6 +462,8 @@ export default function Game({ mode, playerName: playerNameProp }: GameProps) {
             if (inputInterval) clearInterval(inputInterval);
             
             roomRef.current?.leave();
+            roomRef.current = null;
+            isConnectingRef.current = false;
             
             // Remove event listeners
             window.removeEventListener('keydown', (e) => keysPressed[e.key.toLowerCase()] = true);
@@ -459,10 +492,11 @@ export default function Game({ mode, playerName: playerNameProp }: GameProps) {
             if (room) {
                 room.send("respawn");
                 setGameStatus('playing');
+                altitudeWarningTimerRef.current = 5;
+                boundaryWarningTimerRef.current = 7;
             }
         } else {
-            // For offline, we just reset the router to re-trigger the component
-             router.replace('/play');
+            router.push('/play');
         }
     }, [mode, router]);
 
