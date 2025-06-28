@@ -42,34 +42,35 @@ export default function ServerLeaderboard({ players: playersMap }: ServerLeaderb
     // Initial update
     updateLeaderboard();
 
-    // This map will store an array of cleanup functions for each player.
-    const playerCleanupCallbacks = new Map<string, Array<() => void>>();
+    // This map will store the cleanup function for each player's onChange listener.
+    const playerCleanupCallbacks = new Map<string, () => void>();
 
     const addPlayerListeners = (player: PlayerState, id: string) => {
-        const killsListener = player.listen("kills", updateLeaderboard);
-        const nameListener = player.listen("name", updateLeaderboard);
+        // The `onChange` listener is a reliable way to detect any change.
+        player.onChange = () => {
+            updateLeaderboard();
+        };
 
-        // Store the cleanup functions for this player.
-        playerCleanupCallbacks.set(id, [
-            () => killsListener.clear(),
-            () => nameListener.clear(),
-        ]);
+        // Store the cleanup function for this player.
+        playerCleanupCallbacks.set(id, () => {
+            player.onChange = null;
+        });
     };
 
     // Setup for existing players
     playersMap.forEach(addPlayerListeners);
 
-    // Setup for new players
+    // onAdd returns a function that, when called, removes the listener.
     const onAdd = playersMap.onAdd((player, id) => {
         addPlayerListeners(player, id);
         updateLeaderboard();
     });
 
-    // Setup for removed players
+    // onRemove also returns its own cleanup function.
     const onRemove = playersMap.onRemove((_, id) => {
         // Run and remove the cleanup functions for the player who left.
         if (playerCleanupCallbacks.has(id)) {
-            playerCleanupCallbacks.get(id)?.forEach(cb => cb());
+            playerCleanupCallbacks.get(id)?.();
             playerCleanupCallbacks.delete(id);
         }
         updateLeaderboard();
@@ -77,14 +78,12 @@ export default function ServerLeaderboard({ players: playersMap }: ServerLeaderb
 
     // Cleanup when component unmounts
     return () => {
-        // Unregister onAdd and onRemove
+        // Unregister onAdd and onRemove from the playersMap
         onAdd();
         onRemove();
 
         // Run all remaining cleanup functions for players still in the game
-        playerCleanupCallbacks.forEach(callbacks => {
-            callbacks.forEach(cb => cb());
-        });
+        playerCleanupCallbacks.forEach(cleanup => cleanup());
     }
 
   }, [playersMap, isMobile]);
