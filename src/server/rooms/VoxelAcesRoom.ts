@@ -140,9 +140,10 @@ export class VoxelAcesRoom extends Room<VoxelAcesState> {
         this.checkBotPopulation();
     }
     
-    addPlayer(sessionId: string, isAI: boolean, options: any = {}) {
+    addPlayer(sessionId: string, isAI: boolean, options?: any) {
+        const safeOptions = options || {};
         const player = new Player();
-        player.name = isAI ? `Bot ${this.botNames[Math.floor(Math.random() * this.botNames.length)]}` : (options.playerName || "Pilot");
+        player.name = isAI ? `Bot ${this.botNames[Math.floor(Math.random() * this.botNames.length)]}` : (safeOptions.playerName || "Pilot");
         player.isAI = isAI;
         player.health = 0;
         player.gunOverheat = 0;
@@ -158,7 +159,7 @@ export class VoxelAcesRoom extends Room<VoxelAcesState> {
             gunOverheat: 0,
             boundaryTimer: 7,
             altitudeTimer: 5,
-            controlStyle: options.controlStyle || 'arcade',
+            controlStyle: safeOptions.controlStyle || 'arcade',
             isAI: isAI,
             lastAiUpdate: 0,
             isDescendingFromAltitude: false,
@@ -253,11 +254,11 @@ export class VoxelAcesRoom extends Room<VoxelAcesState> {
         let pitch = 0;
         let roll = 0;
         
-        const useArcadeDesktop = serverPlayer.controlStyle === 'arcade' && !input.joystick;
+        const useJoystick = !!input.joystick;
 
-        if (input.joystick) {
-            pitch = -input.joystick.y;
-            roll = -input.joystick.x;
+        if (useJoystick) {
+            pitch = -input.joystick.y * 1.5; // Make joystick slightly more sensitive
+            roll = -input.joystick.x * 1.5;
         } else {
              if (input.w) pitch = 1;
              if (input.s) pitch = -1;
@@ -265,7 +266,7 @@ export class VoxelAcesRoom extends Room<VoxelAcesState> {
              if (input.d) roll = -1;
         }
         
-        if (!useArcadeDesktop) {
+        if (serverPlayer.controlStyle === 'realistic' || useJoystick) {
             pitch *= -1;
         }
         
