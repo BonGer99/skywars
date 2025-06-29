@@ -8,7 +8,15 @@ import { WebSocketTransport } from '@colyseus/ws-transport';
 import { VoxelAcesRoom } from './rooms/VoxelAcesRoom';
 import { parse } from 'url';
 
-const port = Number(process.env.PORT || 3000);
+const getPort = () => {
+  const portArgIndex = process.argv.indexOf('--port');
+  if (portArgIndex !== -1 && process.argv[portArgIndex + 1]) {
+    return Number(process.argv[portArgIndex + 1]);
+  }
+  return Number(process.env.PORT || 3000);
+};
+
+const port = getPort();
 const dev = process.env.NODE_ENV !== 'production';
 const nextApp = next({ dev });
 const handle = nextApp.getRequestHandler();
