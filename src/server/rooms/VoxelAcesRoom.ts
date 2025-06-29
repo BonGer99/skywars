@@ -129,7 +129,9 @@ export class VoxelAcesRoom extends Room<VoxelAcesState> {
 
     onJoin(client: Client, options: any) {
         console.log(client.sessionId, "joined with options:", options);
-        this.addPlayer(client.sessionId, false, options);
+        // Ensure options is a valid object before proceeding.
+        const safeOptions = (options && typeof options === 'object') ? options : {};
+        this.addPlayer(client.sessionId, false, safeOptions);
         this.checkBotPopulation();
     }
 
@@ -140,10 +142,9 @@ export class VoxelAcesRoom extends Room<VoxelAcesState> {
         this.checkBotPopulation();
     }
     
-    addPlayer(sessionId: string, isAI: boolean, options?: any) {
-        const safeOptions = options || {};
+    addPlayer(sessionId: string, isAI: boolean, options: any = {}) {
         const player = new Player();
-        player.name = isAI ? `Bot ${this.botNames[Math.floor(Math.random() * this.botNames.length)]}` : (safeOptions.playerName || "Pilot");
+        player.name = isAI ? `Bot ${this.botNames[Math.floor(Math.random() * this.botNames.length)]}` : (options.playerName || "Pilot");
         player.isAI = isAI;
         player.health = 0;
         player.gunOverheat = 0;
@@ -159,7 +160,7 @@ export class VoxelAcesRoom extends Room<VoxelAcesState> {
             gunOverheat: 0,
             boundaryTimer: 7,
             altitudeTimer: 5,
-            controlStyle: safeOptions.controlStyle || 'arcade',
+            controlStyle: options.controlStyle || 'arcade',
             isAI: isAI,
             lastAiUpdate: 0,
             isDescendingFromAltitude: false,
@@ -255,10 +256,11 @@ export class VoxelAcesRoom extends Room<VoxelAcesState> {
         let roll = 0;
         
         const useJoystick = !!input.joystick;
+        const useArcadeDesktop = serverPlayer.controlStyle === 'arcade' && !useJoystick;
 
         if (useJoystick) {
-            pitch = -input.joystick.y * 1.5; // Make joystick slightly more sensitive
-            roll = -input.joystick.x * 1.5;
+            pitch = -input.joystick.y * PITCH_SPEED;
+            roll = -input.joystick.x * ROLL_SPEED;
         } else {
              if (input.w) pitch = 1;
              if (input.s) pitch = -1;
@@ -266,15 +268,17 @@ export class VoxelAcesRoom extends Room<VoxelAcesState> {
              if (input.d) roll = -1;
         }
         
-        if (serverPlayer.controlStyle === 'realistic' || useJoystick) {
+        if (serverPlayer.controlStyle === 'realistic' && !useJoystick) {
             pitch *= -1;
         }
         
         if (pitch !== 0) {
-            serverPlayer.quaternion.multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), PITCH_SPEED * pitch * delta));
+            const pitchSpeed = PITCH_SPEED;
+            serverPlayer.quaternion.multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), pitchSpeed * pitch * delta));
         }
         if (roll !== 0) {
-            serverPlayer.quaternion.multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 0, 1), ROLL_SPEED * roll * delta));
+            const rollSpeed = ROLL_SPEED;
+            serverPlayer.quaternion.multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 0, 1), rollSpeed * roll * delta));
         }
 
         const speed = input.shift ? BASE_SPEED * BOOST_MULTIPLIER : BASE_SPEED;
