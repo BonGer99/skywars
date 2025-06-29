@@ -8,8 +8,8 @@ const BASE_SPEED = 60;
 const BOOST_MULTIPLIER = 2.0;
 const REALISTIC_PITCH_SPEED = 1.5; 
 const REALISTIC_ROLL_SPEED = 2.5;
-const ARCADE_PITCH_SPEED = 2.2;
-const ARCADE_ROLL_SPEED = 4.0;
+const ARCADE_PITCH_SPEED = 1.5;
+const ARCADE_ROLL_SPEED = 2.5;
 const MAX_ALTITUDE = 220;
 const BOUNDARY = 950;
 const GROUND_Y = -50;
@@ -187,11 +187,11 @@ export class VoxelAcesRoom extends Room<VoxelAcesState> {
 
             if (input.joystick) {
                 const joystick = input.joystick;
-                pitch = joystick.y;
+                pitch = -joystick.y;
                 roll = -joystick.x;
             } else {
-                if (input.w) pitch = -1;
-                if (input.s) pitch = 1;
+                if (input.w) pitch = isArcade ? 1 : -1;
+                if (input.s) pitch = isArcade ? -1 : 1;
                 if (input.a) roll = 1;
                 if (input.d) roll = -1;
             }

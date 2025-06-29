@@ -22,8 +22,8 @@ const BASE_SPEED = 60;
 const BOOST_MULTIPLIER = 2.0;
 const REALISTIC_PITCH_SPEED = 1.5;
 const REALISTIC_ROLL_SPEED = 2.5;
-const ARCADE_PITCH_SPEED = 2.2;
-const ARCADE_ROLL_SPEED = 4.0;
+const ARCADE_PITCH_SPEED = 1.5;
+const ARCADE_ROLL_SPEED = 2.5;
 const BULLET_SPEED = 200;
 const BULLET_LIFESPAN_MS = 5000;
 const INTERPOLATION_FACTOR = 0.05;
@@ -506,11 +506,11 @@ export default function Game({ mode, playerName: playerNameProp }: GameProps) {
 
                     if (onScreenControls && isMobile) {
                         const joystick = joystickInput.current;
-                        pitch = joystick.y;
+                        pitch = -joystick.y;
                         roll = -joystick.x;
                     } else {
-                        if (keysPressed.current['w']) pitch = -1;
-                        if (keysPressed.current['s']) pitch = 1;
+                        if (keysPressed.current['w']) pitch = isArcade ? 1 : -1;
+                        if (keysPressed.current['s']) pitch = isArcade ? -1 : 1;
                         if (keysPressed.current['a']) roll = 1;
                         if (keysPressed.current['d']) roll = -1;
                     }
