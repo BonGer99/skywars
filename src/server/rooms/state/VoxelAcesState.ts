@@ -13,6 +13,7 @@ export class Player extends Schema {
     @type("number") kills: number = 0;
     @type("number") gunOverheat: number = 0;
     @type("boolean") isAI: boolean = false;
+    @type("boolean") isReady: boolean = false;
 }
 
 export class Bullet extends Schema {

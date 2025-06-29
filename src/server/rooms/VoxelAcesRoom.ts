@@ -6,8 +6,10 @@ import * as THREE from 'three';
 const WORLD_SEED = 12345;
 const BASE_SPEED = 60;
 const BOOST_MULTIPLIER = 2.0;
-const PITCH_SPEED = 1.5;
-const ROLL_SPEED = 2.5;
+const REALISTIC_PITCH_SPEED = 1.5;
+const REALISTIC_ROLL_SPEED = 2.5;
+const ARCADE_PITCH_SPEED = 1.5;
+const ARCADE_ROLL_SPEED = 2.5;
 const MAX_ALTITUDE = 220;
 const BOUNDARY = 950;
 const GROUND_Y = -50;
@@ -20,10 +22,10 @@ const TARGET_PLAYER_COUNT = 8;
 const AI_UPDATE_INTERVAL = 1000; // How often AI changes target/strategy (ms)
 const AI_AVOIDANCE_DISTANCE = 75; // Distance to start avoiding obstacles
 const AI_SHOOT_RANGE = 500;
-const AI_SHOOT_ANGLE_THRESHOLD = 0.98; // cos(angle), higher is more accurate
+const AI_SHOOT_ANGLE_THRESHOLD = 0.95; // cos(angle), higher is more accurate
 
 const TERRAIN_COLLISION_GEOMETRY = new THREE.BoxGeometry(1.5, 1.2, 4);
-const BULLET_COLLISION_GEOMETRY = new THREE.BoxGeometry(8, 2, 4);
+const BULLET_COLLISION_GEOMETRY = new THREE.BoxGeometry(12, 3, 6); // Increased size for easier bullet collision
 
 type ControlStyle = 'realistic' | 'arcade';
 
@@ -39,6 +41,9 @@ interface ServerPlayerData {
     isAI: boolean;
     targetId?: string;
     lastAiUpdate: number;
+    isDescendingFromAltitude: boolean; // New state for AI altitude
+    flyByTimer: number; // Timer for AI fly-by behavior
+    invulnerabilityTimer: number;
 }
 
 export class VoxelAcesRoom extends Room<VoxelAcesState> {
@@ -73,7 +78,7 @@ export class VoxelAcesRoom extends Room<VoxelAcesState> {
             }
         });
 
-        this.onMessage("respawn", (client) => {
+        this.onMessage("player_ready", (client) => {
             this.respawnPlayer(client.sessionId);
         });
     }
@@ -143,10 +148,12 @@ export class VoxelAcesRoom extends Room<VoxelAcesState> {
         player.isAI = isAI;
         player.health = PLAYER_HEALTH;
         player.gunOverheat = 0;
+        player.isReady = isAI; // Bots are ready immediately, humans are not.
+
         this.state.players.set(sessionId, player);
 
         this.serverPlayers.set(sessionId, {
-            position: new THREE.Vector3(),
+            position: new THREE.Vector3(0, 10000, 0), // Start in a safe "waiting" area
             quaternion: new THREE.Quaternion(),
             input: {},
             gunCooldown: 0,
@@ -156,9 +163,14 @@ export class VoxelAcesRoom extends Room<VoxelAcesState> {
             controlStyle: options.controlStyle || 'arcade',
             isAI: isAI,
             lastAiUpdate: 0,
+            isDescendingFromAltitude: false,
+            flyByTimer: 0,
+            invulnerabilityTimer: 0
         });
-        
-        this.respawnPlayer(sessionId);
+
+        if (isAI) {
+            this.respawnPlayer(sessionId);
+        }
     }
     
     respawnPlayer(sessionId: string) {
@@ -167,7 +179,10 @@ export class VoxelAcesRoom extends Room<VoxelAcesState> {
 
         if (playerState && serverPlayer) {
             playerState.health = PLAYER_HEALTH;
-            playerState.kills = playerState.isAI ? 0 : playerState.kills; // Reset AI kills, preserve player's
+            // Only reset kills for AI, preserve for human players across deaths in a session.
+            if(playerState.isAI) {
+                playerState.kills = 0;
+            }
             
             const spawnX = (Math.random() - 0.5) * (BOUNDARY * 1.5);
             const spawnY = Math.random() * 100 + 40;
@@ -186,6 +201,11 @@ export class VoxelAcesRoom extends Room<VoxelAcesState> {
             serverPlayer.altitudeTimer = 5;
             serverPlayer.targetId = undefined;
             serverPlayer.lastAiUpdate = 0;
+            serverPlayer.isDescendingFromAltitude = false;
+            serverPlayer.flyByTimer = 0;
+            serverPlayer.invulnerabilityTimer = 3; // 3 seconds of invulnerability on spawn
+
+            playerState.isReady = true; // Player is now officially in the game
         }
     }
 
@@ -240,27 +260,30 @@ export class VoxelAcesRoom extends Room<VoxelAcesState> {
         let roll = 0;
 
         const isArcade = (input.joystick) || serverPlayer.controlStyle === 'arcade';
-
+        const PITCH_MOD = isArcade ? ARCADE_PITCH_SPEED : REALISTIC_PITCH_SPEED;
+        const ROLL_MOD = isArcade ? ARCADE_ROLL_SPEED : REALISTIC_ROLL_SPEED;
+        
         if (input.joystick) {
+            // Joystick controls are naturally roll/pitch
             pitch = -input.joystick.y;
             roll = -input.joystick.x;
         } else {
-            if (input.w) pitch = isArcade ? 1 : -1;
-            if (input.s) pitch = isArcade ? -1 : 1;
-            if (input.a) roll = 1;
-            if (input.d) roll = -1;
+             if (input.w) pitch = isArcade ? 1 : -1;
+             if (input.s) pitch = isArcade ? -1 : 1;
+             if (input.a) roll = 1;
+             if (input.d) roll = -1;
         }
         
-        // Invert pitch for arcade mode to be intuitive (up is up)
-        if (isArcade) {
+        // Invert pitch for arcade mode keyboard to be intuitive (up is up)
+        if (isArcade && !input.joystick) {
             pitch *= -1;
         }
-
+        
         if (pitch !== 0) {
-            serverPlayer.quaternion.multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), PITCH_SPEED * pitch * delta));
+            serverPlayer.quaternion.multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), PITCH_MOD * pitch * delta));
         }
         if (roll !== 0) {
-            serverPlayer.quaternion.multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 0, 1), ROLL_SPEED * roll * delta));
+            serverPlayer.quaternion.multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 0, 1), ROLL_MOD * roll * delta));
         }
 
         const speed = input.shift ? BASE_SPEED * BOOST_MULTIPLIER : BASE_SPEED;
@@ -297,6 +320,10 @@ export class VoxelAcesRoom extends Room<VoxelAcesState> {
     updateAI(sessionId: string, delta: number) {
         const serverPlayer = this.serverPlayers.get(sessionId)!;
         const now = this.clock.currentTime;
+        const aiInput: any = { controlStyle: 'arcade' }; // Bots use arcade flight model
+
+        // Decrease fly-by timer
+        serverPlayer.flyByTimer = Math.max(0, serverPlayer.flyByTimer - delta);
         
         // AI decision making
         if (now > serverPlayer.lastAiUpdate + AI_UPDATE_INTERVAL) {
@@ -306,7 +333,7 @@ export class VoxelAcesRoom extends Room<VoxelAcesState> {
             let minDistance = Infinity;
 
             this.state.players.forEach((otherPlayer, otherSessionId) => {
-                if (otherSessionId === sessionId || otherPlayer.health <= 0) return;
+                if (otherSessionId === sessionId || !otherPlayer.isReady || otherPlayer.health <= 0) return;
                 
                 const otherServerPlayer = this.serverPlayers.get(otherSessionId)!;
                 const distance = serverPlayer.position.distanceTo(otherServerPlayer.position);
@@ -318,45 +345,63 @@ export class VoxelAcesRoom extends Room<VoxelAcesState> {
             serverPlayer.targetId = closestTargetId;
         }
         
-        const aiInput: any = { w: true }; // Always moving forward
+        // --- Altitude Limit Check ---
+        if (serverPlayer.position.y > MAX_ALTITUDE) {
+            serverPlayer.isDescendingFromAltitude = true;
+        }
         
+        // Prioritize descending if above altitude limit
+        if (serverPlayer.isDescendingFromAltitude) {
+            aiInput.s = true; // Pitch down
+            // Stop descending if significantly below the limit
+            if (serverPlayer.position.y < MAX_ALTITUDE - 20) {
+                serverPlayer.isDescendingFromAltitude = false;
+            }
+            serverPlayer.input = aiInput;
+            this.processPlayerInput(sessionId, delta);
+            return; // Skip other behaviors while descending
+        }
+
         // --- Movement ---
         let targetDirection = new THREE.Vector3(0, 0, -1);
         const playerForward = new THREE.Vector3(0, 0, -1).applyQuaternion(serverPlayer.quaternion);
 
-        // Obstacle avoidance takes priority
         if (serverPlayer.position.y < GROUND_Y + AI_AVOIDANCE_DISTANCE) {
             targetDirection.y = 0.5; // Pitch up
         } else if (Math.abs(serverPlayer.position.x) > BOUNDARY - AI_AVOIDANCE_DISTANCE || Math.abs(serverPlayer.position.z) > BOUNDARY - AI_AVOIDANCE_DISTANCE) {
             const centerDirection = new THREE.Vector3(0,0,0).sub(serverPlayer.position).normalize();
             targetDirection = centerDirection;
         } else if (serverPlayer.targetId) {
-            const target = this.serverPlayers.get(serverPlayer.targetId);
+            const target = this.serverPlayers.get(serverPlayer.targetId!);
             if (target && this.state.players.get(serverPlayer.targetId)?.health > 0) {
                  targetDirection = target.position.clone().sub(serverPlayer.position).normalize();
-            } else {
-                serverPlayer.targetId = undefined; // Target is dead or gone
             }
         }
         
         // Steer towards target direction
         const localTargetDirection = targetDirection.clone().applyQuaternion(serverPlayer.quaternion.clone().invert());
         
-        if (localTargetDirection.x > 0.1) aiInput.a = true;
-        else if (localTargetDirection.x < -0.1) aiInput.d = true;
+        if (localTargetDirection.x > 0.1) aiInput.d = true; // roll right
+        else if (localTargetDirection.x < -0.1) aiInput.a = true; // roll left
 
-        if (localTargetDirection.y > 0.1) aiInput.s = true;
-        else if (localTargetDirection.y < -0.1) aiInput.w = true;
+        if (localTargetDirection.y > 0.1) aiInput.w = true; // pitch up
+        else if (localTargetDirection.y < -0.1) aiInput.s = true; // pitch down
 
-        // --- Shooting ---
-        if (serverPlayer.targetId) {
+        // --- Shooting and Fly-by ---
+        if (serverPlayer.targetId && serverPlayer.flyByTimer <= 0) {
             const target = this.serverPlayers.get(serverPlayer.targetId)!;
             const distanceToTarget = serverPlayer.position.distanceTo(target.position);
             const directionToTarget = target.position.clone().sub(serverPlayer.position).normalize();
             const angleDot = playerForward.dot(directionToTarget);
 
             if (distanceToTarget < AI_SHOOT_RANGE && angleDot > AI_SHOOT_ANGLE_THRESHOLD) {
+                // Shoot
                 aiInput.mouse0 = true;
+
+                // Initiate fly-by after shooting
+                if (distanceToTarget < AI_SHOOT_RANGE * 0.8) { // Only initiate fly-by if close enough
+                    serverPlayer.flyByTimer = 2; // Fly away for 2 seconds
+                }
             }
         }
 
@@ -368,11 +413,18 @@ export class VoxelAcesRoom extends Room<VoxelAcesState> {
     update(delta: number) {
         const now = this.clock.currentTime;
 
-        // Process player and AI actions
         this.state.players.forEach((player, sessionId) => {
             const serverPlayer = this.serverPlayers.get(sessionId);
-            if (!serverPlayer || player.health <= 0) return;
 
+            // Skip any processing for players who are not ready, not alive, or don't have a server-side representation
+            if (!serverPlayer || !player.isReady || player.health <= 0) {
+                return;
+            }
+
+            // Decrement invulnerability timer
+            serverPlayer.invulnerabilityTimer = Math.max(0, serverPlayer.invulnerabilityTimer - delta);
+
+            // Process player and AI actions (movement)
             if (player.isAI) {
                 this.updateAI(sessionId, delta);
             } else {
@@ -405,10 +457,13 @@ export class VoxelAcesRoom extends Room<VoxelAcesState> {
             const playerTerrainHitbox = this.createScaledBox(terrainHitboxMesh, 0.8);
             
             let hasCrashed = false;
-            for (const obstacle of this.collidableObjects) {
-                if (playerTerrainHitbox.intersectsBox(obstacle)) {
-                    hasCrashed = true;
-                    break;
+            // Skip terrain collision check if invulnerable
+            if (serverPlayer.invulnerabilityTimer <= 0) {
+                 for (const obstacle of this.collidableObjects) {
+                    if (playerTerrainHitbox.intersectsBox(obstacle)) {
+                        hasCrashed = true;
+                        break;
+                    }
                 }
             }
             
@@ -416,22 +471,23 @@ export class VoxelAcesRoom extends Room<VoxelAcesState> {
                 if (player.health > 0) player.health = 0;
             }
 
-            if (player.health <= 0 && !player.isAI) {
-                // Handle human player death (no automatic respawn)
-            } else if(player.health <= 0 && player.isAI) {
-                this.clock.setTimeout(() => this.respawnPlayer(sessionId), 3000);
+            if (player.health <= 0) {
+                player.isReady = false; // Player is no longer ready, client will show game over
+                if(player.isAI) {
+                    this.clock.setTimeout(() => this.addPlayer(sessionId, true), 5000); // Respawn bot after 5 seconds
+                }
             }
         });
 
-        const playerHitboxes: Map<string, { hitbox: THREE.Box3, player: Player }> = new Map();
+        const playerHitboxes: Map<string, { hitbox: THREE.Box3, player: Player, serverPlayer: ServerPlayerData }> = new Map();
         this.state.players.forEach((p, id) => {
             const serverPlayer = this.serverPlayers.get(id);
-            if(serverPlayer && p.health > 0) {
+            if(serverPlayer && p.isReady && p.health > 0) {
                 const bulletHitboxMesh = new THREE.Mesh(BULLET_COLLISION_GEOMETRY);
                 bulletHitboxMesh.position.copy(serverPlayer.position);
                 bulletHitboxMesh.quaternion.copy(serverPlayer.quaternion);
                 const hitbox = this.createScaledBox(bulletHitboxMesh, 1.0);
-                playerHitboxes.set(id, { hitbox, player: p });
+                playerHitboxes.set(id, { hitbox, player: p, serverPlayer });
             }
         });
         
@@ -452,7 +508,7 @@ export class VoxelAcesRoom extends Room<VoxelAcesState> {
             }
 
             for (const [targetId, targetData] of playerHitboxes.entries()) {
-                if (targetId === bullet.ownerId) continue;
+                if (targetId === bullet.ownerId || targetData.serverPlayer.invulnerabilityTimer > 0) continue;
                 
                 if (targetData.hitbox.containsPoint(bullet.position)) {
                     targetData.player.health -= BULLET_DAMAGE;
