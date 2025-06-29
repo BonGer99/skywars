@@ -4,5 +4,5 @@
     "src/server"
   ],
   "ext": "ts,json",
-  "exec": "tsx"
+  "exec": "tsx src/server/index.ts"
 }
