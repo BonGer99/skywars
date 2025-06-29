@@ -6,15 +6,16 @@ import * as THREE from 'three';
 const WORLD_SEED = 12345;
 const BASE_SPEED = 60;
 const BOOST_MULTIPLIER = 2.0;
-const PITCH_SPEED = 1.5; 
-const ROLL_SPEED = 2.5;
+const REALISTIC_PITCH_SPEED = 1.5; 
+const REALISTIC_ROLL_SPEED = 2.5;
+const ARCADE_PITCH_SPEED = 2.2;
+const ARCADE_ROLL_SPEED = 4.0;
 const MAX_ALTITUDE = 220;
 const BOUNDARY = 950;
 const GROUND_Y = -50;
 const BULLET_SPEED = 200;
 const BULLET_LIFESPAN_MS = 5000;
 const PLAYER_HEALTH = 100;
-const YAW_SPEED_MOBILE = 1.5;
 
 const TERRAIN_COLLISION_GEOMETRY = new THREE.BoxGeometry(1.5, 1.2, 4);
 const BULLET_COLLISION_GEOMETRY = new THREE.BoxGeometry(8, 2, 4);
@@ -177,39 +178,29 @@ export class VoxelAcesRoom extends Room<VoxelAcesState> {
 
             const input = serverPlayer.input || {};
             
-            // Handle joystick input (mobile) first - Pitch and Roll
+            let pitch = 0;
+            let roll = 0;
+            const isArcade = (input.joystick) || serverPlayer.controlStyle === 'arcade';
+
+            const PITCH_MOD = isArcade ? ARCADE_PITCH_SPEED : REALISTIC_PITCH_SPEED;
+            const ROLL_MOD = isArcade ? ARCADE_ROLL_SPEED : REALISTIC_ROLL_SPEED;
+
             if (input.joystick) {
                 const joystick = input.joystick;
+                pitch = joystick.y;
+                roll = -joystick.x;
+            } else {
+                if (input.w) pitch = -1;
+                if (input.s) pitch = 1;
+                if (input.a) roll = 1;
+                if (input.d) roll = -1;
+            }
 
-                // Pitch (Up/Down on joystick)
-                if (joystick.y !== 0) {
-                    serverPlayer.quaternion.multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), PITCH_SPEED * joystick.y * delta));
-                }
-                
-                // Roll (Left/Right on joystick)
-                if (joystick.x !== 0) {
-                    serverPlayer.quaternion.multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 0, 1), -ROLL_SPEED * joystick.x * delta));
-                }
-            } else { // Handle Keyboard controls
-                const controlStyle = serverPlayer.controlStyle;
-                if (controlStyle === 'arcade') {
-                     const keyboardInput = { x: 0, y: 0 };
-                     if (input.a) keyboardInput.x = -1;
-                     if (input.d) keyboardInput.x = 1;
-                     if (input.w) keyboardInput.y = -1;
-                     if (input.s) keyboardInput.y = 1;
-     
-                     const yawAngle = -YAW_SPEED_MOBILE * keyboardInput.x * delta;
-                     serverPlayer.quaternion.multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), yawAngle));
-
-                     const pitchAngle = PITCH_SPEED * keyboardInput.y * delta;
-                     serverPlayer.quaternion.multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), pitchAngle));
-                } else { // 'realistic'
-                    if (input.w) serverPlayer.quaternion.multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), -PITCH_SPEED * delta));
-                    if (input.s) serverPlayer.quaternion.multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), PITCH_SPEED * delta));
-                    if (input.a) serverPlayer.quaternion.multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 0, 1), ROLL_SPEED * delta));
-                    if (input.d) serverPlayer.quaternion.multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 0, 1), -ROLL_SPEED * delta));
-                }
+            if (pitch !== 0) {
+                serverPlayer.quaternion.multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), PITCH_MOD * pitch * delta));
+            }
+            if (roll !== 0) {
+                serverPlayer.quaternion.multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 0, 1), ROLL_MOD * roll * delta));
             }
 
             const speed = input.shift ? BASE_SPEED * BOOST_MULTIPLIER : BASE_SPEED;
