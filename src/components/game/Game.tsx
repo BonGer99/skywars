@@ -20,10 +20,8 @@ const MAX_ALTITUDE = 220;
 const GROUND_Y = -50;
 const BASE_SPEED = 60;
 const BOOST_MULTIPLIER = 2.0;
-const REALISTIC_PITCH_SPEED = 1.5;
-const REALISTIC_ROLL_SPEED = 2.5;
-const ARCADE_PITCH_SPEED = 1.5;
-const ARCADE_ROLL_SPEED = 2.5;
+const PITCH_SPEED = 1.5;
+const ROLL_SPEED = 2.5;
 const BULLET_SPEED = 200;
 const BULLET_LIFESPAN_MS = 5000;
 const INTERPOLATION_FACTOR = 0.05;
@@ -187,12 +185,7 @@ export default function Game({ mode, playerName: playerNameProp }: GameProps) {
     const isConnectingRef = useRef(false);
 
     // This ref is for offline mode UI state, online state is driven by server.
-    const offlineGameStatusRef = useRef<GameStatus>(mode === 'offline' ? 'menu' : 'loading');
-    const [_offlineGameStatus, _setOfflineGameStatus] = useState<GameStatus>(offlineGameStatusRef.current);
-    const setOfflineGameStatus = (status: GameStatus) => {
-        offlineGameStatusRef.current = status;
-        _setOfflineGameStatus(status);
-    }
+    const [offlineGameStatus, setOfflineGameStatus] = useState<GameStatus>(mode === 'offline' ? 'menu' : 'loading');
     
     const keysPressed = useRef<Record<string, boolean>>({});
     const joystickInput = useRef({ x: 0, y: 0 });
@@ -423,7 +416,7 @@ export default function Game({ mode, playerName: playerNameProp }: GameProps) {
                 isConnectingRef.current = true;
                 try {
                     const protocol = window.location.protocol === "https:" ? "wss" : "ws";
-                    const endpoint = `${protocol}://${window.location.host}/colyseus`;
+                    const endpoint = `${protocol}://${window.location.host}`;
                     client = new Colyseus.Client(endpoint);
                     const room = await client.joinOrCreate<VoxelAcesState>("voxel_aces_room", { playerName: playerNameProp, controlStyle });
                     roomRef.current = room;
@@ -461,7 +454,7 @@ export default function Game({ mode, playerName: playerNameProp }: GameProps) {
                     room.state.bullets.onRemove((_, bulletId) => { if(localBullets[bulletId]) { scene.remove(localBullets[bulletId]); delete localBullets[bulletId]; } });
                     
                     inputInterval = setInterval(() => {
-                        if (roomRef.current && isConnected && isPlayerReady) {
+                        if (roomRef.current && isConnected && roomRef.current.state.players.get(roomRef.current.sessionId)?.isReady) {
                             const playerInput = {
                                 w: !!keysPressed.current['w'], s: !!keysPressed.current['s'], a: !!keysPressed.current['a'], d: !!keysPressed.current['d'],
                                 shift: !!keysPressed.current['shift'], space: !!keysPressed.current[' '], mouse0: !!keysPressed.current['mouse0'],
@@ -487,8 +480,8 @@ export default function Game({ mode, playerName: playerNameProp }: GameProps) {
                 const delta = lastTime > 0 ? (time - lastTime) / 1000 : 1/60;
                 lastTime = time;
 
-                const isPlaying = (mode === 'offline' && offlineGameStatusRef.current === 'playing') || (mode === 'online' && isPlayerReady && playerHealth > 0);
-                if (!isPlaying) { renderer.render(scene, camera); return; }
+                const localPlayerIsPlaying = (mode === 'offline' && offlineGameStatus === 'playing') || (mode === 'online' && isPlayerReady && playerHealth > 0);
+                if (!localPlayerIsPlaying) { renderer.render(scene, camera); return; }
                 
                 let myPlane: THREE.Group | null = null;
                 
@@ -500,29 +493,28 @@ export default function Game({ mode, playerName: playerNameProp }: GameProps) {
 
                     let pitch = 0;
                     let roll = 0;
-                    const isArcade = (onScreenControls && isMobile) || controlStyle === 'arcade';
-
-                    const PITCH_MOD = isArcade ? ARCADE_PITCH_SPEED : REALISTIC_PITCH_SPEED;
-                    const ROLL_MOD = isArcade ? ARCADE_ROLL_SPEED : REALISTIC_ROLL_SPEED;
+                    
+                    const useArcadeDesktop = controlStyle === 'arcade' && !isMobile;
 
                     if (onScreenControls && isMobile) {
                         pitch = -joystickInput.current.y;
                         roll = -joystickInput.current.x;
                     } else {
-                        if (keysPressed.current['w']) pitch = isArcade ? 1 : -1;
-                        if (keysPressed.current['s']) pitch = isArcade ? -1 : 1;
+                        if (keysPressed.current['w']) pitch = 1;
+                        if (keysPressed.current['s']) pitch = -1;
                         if (keysPressed.current['a']) roll = 1;
                         if (keysPressed.current['d']) roll = -1;
                     }
-                    if (isArcade && !onScreenControls) {
+
+                    if (!useArcadeDesktop) {
                         pitch *= -1;
                     }
 
                     if (pitch !== 0) {
-                        playerState.quaternion.multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), PITCH_MOD * pitch * delta));
+                        playerState.quaternion.multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), PITCH_SPEED * pitch * delta));
                     }
                     if (roll !== 0) {
-                        playerState.quaternion.multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 0, 1), ROLL_MOD * roll * delta));
+                        playerState.quaternion.multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 0, 1), ROLL_SPEED * roll * delta));
                     }
                                         
                     const speed = keysPressed.current['shift'] ? BASE_SPEED * BOOST_MULTIPLIER : BASE_SPEED;
@@ -612,12 +604,12 @@ export default function Game({ mode, playerName: playerNameProp }: GameProps) {
                     let altWarn = currentAltitude > MAX_ALTITUDE;
                     if (altWarn) { altitudeWarningTimerRef.current = Math.max(0, altitudeWarningTimerRef.current - delta); setWhiteoutOpacity(Math.max(0, 1 - (altitudeWarningTimerRef.current / 5))); } 
                     else { altitudeWarningTimerRef.current = 5; setWhiteoutOpacity(0); }
-                    setShowAltitudeWarning(altWarn && isPlaying);
+                    setShowAltitudeWarning(altWarn && localPlayerIsPlaying);
 
                     let boundaryWarn = Math.abs(myPlane.position.x) > BOUNDARY || Math.abs(myPlane.position.z) > BOUNDARY;
                     if (boundaryWarn) { boundaryWarningTimerRef.current = Math.max(0, boundaryWarningTimerRef.current - delta); } 
                     else { boundaryWarningTimerRef.current = 7; }
-                    setShowBoundaryWarning(boundaryWarn && isPlaying);
+                    setShowBoundaryWarning(boundaryWarn && localPlayerIsPlaying);
 
                     const cameraOffset = new THREE.Vector3(0, 8, 15);
                     const idealOffset = cameraOffset.clone().applyQuaternion(myPlane.quaternion);
@@ -644,13 +636,15 @@ export default function Game({ mode, playerName: playerNameProp }: GameProps) {
             if(mountRef.current && renderer.domElement && mountRef.current.contains(renderer.domElement)) { mountRef.current.removeChild(renderer.domElement); }
             renderer.dispose(); scene.clear();
         };
-    }, [mode, playerNameProp, router, onScreenControls, isMobile, controlStyle, handleReady, resetOfflineGame]);
+    // The main setup effect should only run once.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, []);
 
-    const isPlaying = (mode === 'offline' && _offlineGameStatus === 'playing') || (mode === 'online' && isPlayerReady && playerHealth > 0);
-    const isGameOver = (mode === 'offline' && _offlineGameStatus === 'gameover') || (mode === 'online' && playerHealth <= 0 && isConnected);
-    const isReadyScreen = (mode === 'online' && isConnected && !isPlayerReady && playerHealth > 0);
-    const isLoading = (mode === 'online' && !isConnected);
-
+    const isLoading = mode === 'online' && !isConnected;
+    const isReadyScreen = mode === 'online' && isConnected && !isPlayerReady && playerHealth > 0;
+    const isPlaying = (mode === 'offline' && offlineGameStatus === 'playing') || (mode === 'online' && isPlayerReady && playerHealth > 0);
+    const isGameOver = (mode === 'offline' && offlineGameStatus === 'gameover') || (mode === 'online' && playerHealth <= 0 && isConnected);
+    
     return (
         <div className="relative w-screen h-screen bg-background overflow-hidden touch-none" onContextMenu={(e) => e.preventDefault()}>
             <div ref={mountRef} className="absolute top-0 left-0 w-full h-full" />
@@ -666,7 +660,7 @@ export default function Game({ mode, playerName: playerNameProp }: GameProps) {
                 </div>
             )}
             
-            {_offlineGameStatus === 'menu' && mode === 'offline' && (
+            {offlineGameStatus === 'menu' && mode === 'offline' && (
                  <div className="absolute inset-0 flex items-center justify-center z-10">
                     <Card className="max-w-md mx-auto bg-card/80 backdrop-blur-sm border-primary/20 shadow-xl text-center">
                         <CardHeader><CardTitle className="text-5xl font-bold font-headline text-primary">Ready for Takeoff?</CardTitle></CardHeader>
