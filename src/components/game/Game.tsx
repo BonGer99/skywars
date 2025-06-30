@@ -219,6 +219,7 @@ export default function Game({ mode, playerName: playerNameProp }: GameProps) {
     // Online-specific UI state
     const [isConnected, setIsConnected] = useState(false);
     const [isPlayerReady, setIsPlayerReady] = useState(false);
+    const [hasPlayed, setHasPlayed] = useState(false);
 
     const [showAltitudeWarning, setShowAltitudeWarning] = useState(false);
     const altitudeWarningTimerRef = useRef(5);
@@ -273,6 +274,12 @@ export default function Game({ mode, playerName: playerNameProp }: GameProps) {
         size.multiplyScalar(scale);
         return new THREE.Box3().setFromCenterAndSize(center, size);
     };
+    
+    useEffect(() => {
+        if (isPlayerReady) {
+            setHasPlayed(true);
+        }
+    }, [isPlayerReady]);
 
     useEffect(() => {
         if (typeof window === 'undefined' || !mountRef.current) return;
@@ -435,6 +442,8 @@ export default function Game({ mode, playerName: playerNameProp }: GameProps) {
                         scene.add(planeMesh);
                         if(isMe) {
                             setIsPlayerReady(player.isReady);
+                            // Set initial health from server, important for the game over logic
+                            setPlayerHealth(player.health);
                             player.listen("health", (currentValue) => setPlayerHealth(currentValue));
                             player.listen("kills", (currentValue) => setScore(currentValue));
                             player.listen("gunOverheat", (currentValue) => setGunOverheat(currentValue));
@@ -506,8 +515,8 @@ export default function Game({ mode, playerName: playerNameProp }: GameProps) {
                         if (keysPressed.current['d']) roll = -1;
                     }
 
-                    if (!useArcadeDesktop) {
-                        pitch *= -1;
+                    if (useArcadeDesktop) {
+                        pitch *= -1; // Invert pitch for arcade style
                     }
 
                     if (pitch !== 0) {
@@ -641,9 +650,9 @@ export default function Game({ mode, playerName: playerNameProp }: GameProps) {
     }, []);
 
     const isLoading = mode === 'online' && !isConnected;
-    const isReadyScreen = mode === 'online' && isConnected && !isPlayerReady && playerHealth > 0;
-    const isPlaying = (mode === 'offline' && offlineGameStatus === 'playing') || (mode === 'online' && isPlayerReady && playerHealth > 0);
-    const isGameOver = (mode === 'offline' && offlineGameStatus === 'gameover') || (mode === 'online' && playerHealth <= 0 && isConnected);
+    const isGameOver = (mode === 'offline' && offlineGameStatus === 'gameover') || (mode === 'online' && isConnected && hasPlayed && playerHealth <= 0);
+    const isReadyScreen = mode === 'online' && isConnected && !isPlayerReady && !isGameOver;
+    const isPlaying = (mode === 'offline' && offlineGameStatus === 'playing') || (mode === 'online' && isConnected && isPlayerReady && playerHealth > 0);
     
     return (
         <div className="relative w-screen h-screen bg-background overflow-hidden touch-none" onContextMenu={(e) => e.preventDefault()}>
