@@ -495,7 +495,7 @@ export default function Game({ mode, playerName: playerNameProp }: GameProps) {
 
                 let localPlayerIsPlaying = false;
                 if (mode === 'online') {
-                    if (roomRef.current?.sessionId && roomRef.current.state.players.has(roomRef.current.sessionId)) {
+                    if (roomRef.current?.state && roomRef.current.sessionId && roomRef.current.state.players.has(roomRef.current.sessionId)) {
                         const me = roomRef.current.state.players.get(roomRef.current.sessionId)!;
                         localPlayerIsPlaying = me.isReady && me.health > 0;
                     }
@@ -595,7 +595,7 @@ export default function Game({ mode, playerName: playerNameProp }: GameProps) {
                     }
                 }
 
-                if (mode === 'online' && roomRef.current) {
+                if (mode === 'online' && roomRef.current && roomRef.current.state) {
                     myPlane = localPlanes[roomRef.current.sessionId] || null;
                     roomRef.current.state.players.forEach((player, sessionId) => {
                         const planeMesh = localPlanes[sessionId];
