@@ -129,8 +129,9 @@ export class VoxelAcesRoom extends Room<VoxelAcesState> {
 
     onJoin(client: Client, options: any) {
         console.log(client.sessionId, "joined with options:", options);
-        // Ensure options is a valid object before proceeding.
-        const safeOptions = options || {};
+        // Sanitize options to prevent server crash from malformed client data.
+        const safeOptions = (typeof options === 'object' && options !== null) ? options : {};
+        
         this.addPlayer(client.sessionId, false, safeOptions);
         this.checkBotPopulation();
     }
@@ -146,12 +147,15 @@ export class VoxelAcesRoom extends Room<VoxelAcesState> {
         const player = new Player();
         
         const providedName = options.playerName;
-        const finalPlayerName = (typeof providedName === 'string' && providedName.trim())
+        const finalPlayerName = (typeof providedName === 'string' && providedName.trim().length > 0)
             ? providedName.trim().substring(0, 16)
             : "Pilot";
 
-        player.name = isAI ? `Bot ${this.botNames[Math.floor(Math.random() * this.botNames.length)]}` : finalPlayerName;
+        const controlStyle = (options.controlStyle === 'realistic' || options.controlStyle === 'arcade') 
+            ? options.controlStyle 
+            : 'arcade';
         
+        player.name = isAI ? `Bot ${this.botNames[Math.floor(Math.random() * this.botNames.length)]}` : finalPlayerName;
         player.isAI = isAI;
         player.health = 0;
         player.gunOverheat = 0;
@@ -167,7 +171,7 @@ export class VoxelAcesRoom extends Room<VoxelAcesState> {
             gunOverheat: 0,
             boundaryTimer: 7,
             altitudeTimer: 5,
-            controlStyle: options.controlStyle || 'arcade',
+            controlStyle: controlStyle,
             isAI: isAI,
             lastAiUpdate: 0,
             isDescendingFromAltitude: false,
