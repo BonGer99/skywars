@@ -185,7 +185,12 @@ export default function Game({ mode, playerName: playerNameProp }: GameProps) {
     const isConnectingRef = useRef(false);
 
     // This ref is for offline mode UI state, online state is driven by server.
-    const [offlineGameStatus, setOfflineGameStatus] = useState<GameStatus>(mode === 'offline' ? 'menu' : 'loading');
+    const [offlineGameStatus, _setOfflineGameStatus] = useState<GameStatus>(mode === 'offline' ? 'menu' : 'loading');
+    const offlineGameStatusRef = useRef(offlineGameStatus);
+    const setOfflineGameStatus = (status: GameStatus) => {
+        offlineGameStatusRef.current = status;
+        _setOfflineGameStatus(status);
+    };
     
     const keysPressed = useRef<Record<string, boolean>>({});
     const joystickInput = useRef({ x: 0, y: 0 });
@@ -488,8 +493,20 @@ export default function Game({ mode, playerName: playerNameProp }: GameProps) {
                 const delta = lastTime > 0 ? (time - lastTime) / 1000 : 1/60;
                 lastTime = time;
 
-                const localPlayerIsPlaying = (mode === 'offline' && offlineGameStatus === 'playing') || (mode === 'online' && isPlayerReady && playerHealth > 0);
-                if (!localPlayerIsPlaying) { renderer.render(scene, camera); return; }
+                let localPlayerIsPlaying = false;
+                if (mode === 'online') {
+                    if (roomRef.current?.sessionId && roomRef.current.state.players.has(roomRef.current.sessionId)) {
+                        const me = roomRef.current.state.players.get(roomRef.current.sessionId)!;
+                        localPlayerIsPlaying = me.isReady && me.health > 0;
+                    }
+                } else { // offline
+                    localPlayerIsPlaying = offlineGameStatusRef.current === 'playing';
+                }
+
+                if (!localPlayerIsPlaying) {
+                    renderer.render(scene, camera);
+                    return;
+                }
                 
                 let myPlane: THREE.Group | null = null;
                 
