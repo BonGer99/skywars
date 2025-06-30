@@ -256,13 +256,13 @@ export default function Game({ mode, playerName: playerNameProp }: GameProps) {
         setOfflineGameStatus('playing');
     }, []);
 
-    const handleReady = useCallback(() => {
+    const handleReady = () => {
         if (mode === 'online') {
             roomRef.current?.send("player_ready");
         } else {
             resetOfflineGame();
         }
-    }, [mode, resetOfflineGame]);
+    };
 
     const createScaledBox = (mesh: THREE.Mesh, scale: number): THREE.Box3 => {
         mesh.updateMatrixWorld();
@@ -442,7 +442,6 @@ export default function Game({ mode, playerName: playerNameProp }: GameProps) {
                         scene.add(planeMesh);
                         if(isMe) {
                             setIsPlayerReady(player.isReady);
-                            // Set initial health from server, important for the game over logic
                             setPlayerHealth(player.health);
                             player.listen("health", (currentValue) => setPlayerHealth(currentValue));
                             player.listen("kills", (currentValue) => setScore(currentValue));
@@ -650,7 +649,7 @@ export default function Game({ mode, playerName: playerNameProp }: GameProps) {
     }, []);
 
     const isLoading = mode === 'online' && !isConnected;
-    const isGameOver = (mode === 'offline' && offlineGameStatus === 'gameover') || (mode === 'online' && isConnected && hasPlayed && playerHealth <= 0);
+    const isGameOver = (mode === 'online' && isConnected && hasPlayed && playerHealth <= 0);
     const isReadyScreen = mode === 'online' && isConnected && !isPlayerReady && !isGameOver;
     const isPlaying = (mode === 'offline' && offlineGameStatus === 'playing') || (mode === 'online' && isConnected && isPlayerReady && playerHealth > 0);
     
