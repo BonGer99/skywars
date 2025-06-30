@@ -39,7 +39,7 @@ interface ServerPlayerData {
     isAI: boolean;
     targetId?: string;
     lastAiUpdate: number;
-    isDescendingFromAltitude: boolean; // New state for AI altitude
+    isDescendingFromAltitude: boolean;
     flyByTimer: number; // Timer for AI fly-by behavior
     invulnerabilityTimer: number;
 }
@@ -128,14 +128,14 @@ export class VoxelAcesRoom extends Room<VoxelAcesState> {
 
     onJoin(client: Client, options: any) {
         try {
-            console.log(client.sessionId, "attempting to join with options:", options);
+            const validOptions = options && typeof options === 'object' ? options : {};
 
-            const playerName = (options && typeof options.playerName === 'string' && options.playerName.trim().length > 0)
-                ? options.playerName.trim().substring(0, 16)
+            const playerName = (typeof validOptions.playerName === 'string' && validOptions.playerName.trim().length > 0)
+                ? validOptions.playerName.trim().substring(0, 16)
                 : "Pilot";
             
-            const controlStyle = (options && (options.controlStyle === 'realistic' || options.controlStyle === 'arcade'))
-                ? options.controlStyle
+            const controlStyle = (validOptions.controlStyle === 'realistic' || validOptions.controlStyle === 'arcade')
+                ? validOptions.controlStyle
                 : 'arcade';
     
             this.addPlayer(client.sessionId, false, { playerName, controlStyle });
@@ -143,7 +143,7 @@ export class VoxelAcesRoom extends Room<VoxelAcesState> {
             this.checkBotPopulation();
 
         } catch (e) {
-            console.error(`[VoxelAcesRoom] CRASH in onJoin for client ${client.sessionId}:`, e);
+            console.error(`[VoxelAcesRoom] FATAL: Crash in onJoin for client ${client.sessionId}:`, e);
         }
     }
 
@@ -161,19 +161,19 @@ export class VoxelAcesRoom extends Room<VoxelAcesState> {
         player.isAI = isAI;
         player.health = 0;
         player.gunOverheat = 0;
-        player.isReady = false; // All players start as not ready
+        player.isReady = false;
 
         this.state.players.set(sessionId, player);
 
         this.serverPlayers.set(sessionId, {
-            position: new THREE.Vector3(0, 10000, 0), // Start in a safe "waiting" area
+            position: new THREE.Vector3(0, 10000, 0),
             quaternion: new THREE.Quaternion(),
             input: {},
             gunCooldown: 0,
             gunOverheat: 0,
             boundaryTimer: 7,
             altitudeTimer: 5,
-            controlStyle: options.controlStyle,
+            controlStyle: isAI ? 'arcade' : options.controlStyle,
             isAI: isAI,
             lastAiUpdate: 0,
             isDescendingFromAltitude: false,
@@ -215,9 +215,9 @@ export class VoxelAcesRoom extends Room<VoxelAcesState> {
             serverPlayer.lastAiUpdate = 0;
             serverPlayer.isDescendingFromAltitude = false;
             serverPlayer.flyByTimer = 0;
-            serverPlayer.invulnerabilityTimer = 3; // 3 seconds of invulnerability on spawn
+            serverPlayer.invulnerabilityTimer = 3;
 
-            playerState.isReady = true; // Player is now officially in the game
+            playerState.isReady = true;
         }
     }
 
@@ -269,7 +269,6 @@ export class VoxelAcesRoom extends Room<VoxelAcesState> {
         let roll = 0;
         
         const useJoystick = !!input.joystick;
-        const useArcadeDesktop = serverPlayer.controlStyle === 'arcade' && !useJoystick;
 
         if (useJoystick) {
             pitch = -input.joystick.y * PITCH_SPEED;
@@ -281,6 +280,8 @@ export class VoxelAcesRoom extends Room<VoxelAcesState> {
              if (input.d) roll = -1;
         }
         
+        // In "realistic" flight sims, pushing stick forward (UP) makes plane go down.
+        // So we invert the pitch.
         if (serverPlayer.controlStyle === 'realistic' && !useJoystick) {
             pitch *= -1;
         }
@@ -328,7 +329,7 @@ export class VoxelAcesRoom extends Room<VoxelAcesState> {
     updateAI(sessionId: string, delta: number) {
         const serverPlayer = this.serverPlayers.get(sessionId)!;
         const now = this.clock.currentTime;
-        const aiInput: any = { controlStyle: 'arcade' }; 
+        const aiInput: any = {};
 
         serverPlayer.flyByTimer = Math.max(0, serverPlayer.flyByTimer - delta);
         
@@ -351,33 +352,41 @@ export class VoxelAcesRoom extends Room<VoxelAcesState> {
             serverPlayer.targetId = closestTargetId;
         }
         
+        let targetDirection: THREE.Vector3;
+        const playerForward = new THREE.Vector3(0, 0, -1).applyQuaternion(serverPlayer.quaternion);
+
+        // AI Priorities: 1. Survival (Ceiling/Ground/Bounds), 2. Combat
+        
+        // Priority 1a: Ceiling avoidance
         if (serverPlayer.position.y > MAX_ALTITUDE) {
             serverPlayer.isDescendingFromAltitude = true;
         }
-        
-        if (serverPlayer.isDescendingFromAltitude) {
-            aiInput.s = true; 
-            if (serverPlayer.position.y < MAX_ALTITUDE - 20) {
-                serverPlayer.isDescendingFromAltitude = false;
-            }
-            serverPlayer.input = aiInput;
-            this.processPlayerInput(sessionId, delta);
-            return; 
+        if (serverPlayer.position.y < MAX_ALTITUDE - 50) { // Give a buffer before it stops forced descent
+             serverPlayer.isDescendingFromAltitude = false;
         }
 
-        let targetDirection = new THREE.Vector3(0, 0, -1);
-        const playerForward = new THREE.Vector3(0, 0, -1).applyQuaternion(serverPlayer.quaternion);
-
-        if (serverPlayer.position.y < GROUND_Y + AI_AVOIDANCE_DISTANCE) {
-            targetDirection.y = 0.5;
-        } else if (Math.abs(serverPlayer.position.x) > BOUNDARY - AI_AVOIDANCE_DISTANCE || Math.abs(serverPlayer.position.z) > BOUNDARY - AI_AVOIDANCE_DISTANCE) {
-            const centerDirection = new THREE.Vector3(0,0,0).sub(serverPlayer.position).normalize();
+        if (serverPlayer.isDescendingFromAltitude) {
+            targetDirection = new THREE.Vector3(playerForward.x, -0.7, playerForward.z).normalize();
+        } 
+        // Priority 1b: Ground avoidance
+        else if (serverPlayer.position.y < GROUND_Y + AI_AVOIDANCE_DISTANCE) {
+            targetDirection = new THREE.Vector3(playerForward.x, 0.5, playerForward.z).normalize();
+        } 
+        // Priority 1c: Boundary avoidance
+        else if (Math.abs(serverPlayer.position.x) > BOUNDARY - AI_AVOIDANCE_DISTANCE || Math.abs(serverPlayer.position.z) > BOUNDARY - AI_AVOIDANCE_DISTANCE) {
+            const centerDirection = new THREE.Vector3(0, serverPlayer.position.y, 0).sub(serverPlayer.position).normalize();
             targetDirection = centerDirection;
-        } else if (serverPlayer.targetId) {
+        }
+        // Priority 2: Combat
+        else if (serverPlayer.targetId) {
             const target = this.serverPlayers.get(serverPlayer.targetId!);
             if (target && this.state.players.get(serverPlayer.targetId)?.health > 0) {
                  targetDirection = target.position.clone().sub(serverPlayer.position).normalize();
+            } else {
+                 targetDirection = playerForward; // No valid target, fly straight
             }
+        } else {
+             targetDirection = playerForward; // No target, fly straight
         }
         
         const localTargetDirection = targetDirection.clone().applyQuaternion(serverPlayer.quaternion.clone().invert());
@@ -388,7 +397,8 @@ export class VoxelAcesRoom extends Room<VoxelAcesState> {
         if (localTargetDirection.y > 0.1) aiInput.w = true; 
         else if (localTargetDirection.y < -0.1) aiInput.s = true;
 
-        if (serverPlayer.targetId && serverPlayer.flyByTimer <= 0) {
+        // AI Shooting logic
+        if (serverPlayer.targetId && serverPlayer.flyByTimer <= 0 && !serverPlayer.isDescendingFromAltitude) {
             const target = this.serverPlayers.get(serverPlayer.targetId)!;
             const distanceToTarget = serverPlayer.position.distanceTo(target.position);
             const directionToTarget = target.position.clone().sub(serverPlayer.position).normalize();

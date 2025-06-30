@@ -169,8 +169,10 @@ const OnScreenControls = ({ joystickInput, keysPressed }: {
     );
 };
 
-type OfflineGameStatus = 'menu' | 'playing' | 'gameover';
 type GameMode = 'offline' | 'online';
+type OfflineGameStatus = 'menu' | 'playing' | 'gameover';
+type OnlineGameStatus = 'loading' | 'ready' | 'playing' | 'gameover';
+
 
 interface GameProps {
   mode: GameMode;
@@ -212,10 +214,9 @@ export default function Game({ mode, playerName: playerNameProp }: GameProps) {
     const { onScreenControls, controlStyle } = useSettings();
     const isMobile = useIsMobile();
     
-    const [isConnected, setIsConnected] = useState(false);
-    const hasPlayedRef = useRef(false); // Use ref to survive re-renders without causing them
-    const [offlineGameStatus, setOfflineGameStatus] = useState<OfflineGameStatus>(mode === 'offline' ? 'menu' : 'loading');
-
+    const offlineGameStatusRef = useRef<OfflineGameStatus>(mode === 'offline' ? 'menu' : 'playing');
+    const [offlineGameStatus, setOfflineGameStatus] = useState<OfflineGameStatus>(offlineGameStatusRef.current);
+    
     const [showAltitudeWarning, setShowAltitudeWarning] = useState(false);
     const altitudeWarningTimerRef = useRef(5);
 
@@ -224,29 +225,33 @@ export default function Game({ mode, playerName: playerNameProp }: GameProps) {
     
     const [whiteoutOpacity, setWhiteoutOpacity] = useState(0);
 
-    // Get the local player from the server state
-    const room = roomRef.current;
-    const me = (mode === 'online' && room?.sessionId && room.state?.players.get(room.sessionId)) || null;
-
-    // The single source of truth for the game's current screen
-    let gameStatus: 'loading' | 'ready' | 'playing' | 'gameover' | 'offline-menu' | 'offline-playing' | 'offline-gameover' = 'loading';
-    if (mode === 'online') {
-        if (!isConnected || !me) {
-            gameStatus = 'loading';
-        } else if (me.health <= 0 && hasPlayedRef.current) {
-            gameStatus = 'gameover';
-        } else if (!me.isReady) {
-            gameStatus = 'ready';
-        } else {
-            gameStatus = 'playing';
+    const getGameStatus = (): OnlineGameStatus | OfflineGameStatus => {
+        if (mode === 'offline') {
+            return offlineGameStatusRef.current;
         }
-    } else { // offline mode
-        if (offlineGameStatus === 'menu') gameStatus = 'offline-menu';
-        else if (offlineGameStatus === 'playing') gameStatus = 'offline-playing';
-        else if (offlineGameStatus === 'gameover') gameStatus = 'offline-gameover';
-    }
+
+        const room = roomRef.current;
+        if (!room || !room.sessionId || !room.state) {
+            return 'loading';
+        }
+        const me = room.state.players.get(room.sessionId);
+        if (!me) {
+            return 'loading';
+        }
+
+        if (me.isReady) {
+            return 'playing';
+        } else if (me.health <= 0) {
+            return 'gameover';
+        } else {
+            return 'ready';
+        }
+    };
+    const [gameStatus, setGameStatus] = useState<OnlineGameStatus | OfflineGameStatus>(getGameStatus());
+
 
     const handleLeaveGame = useCallback(() => {
+      roomRef.current?.leave();
       router.push('/');
     }, [router]);
 
@@ -270,17 +275,17 @@ export default function Game({ mode, playerName: playerNameProp }: GameProps) {
         
         altitudeWarningTimerRef.current = 5;
         boundaryWarningTimerRef.current = 7;
+        offlineGameStatusRef.current = 'playing';
         setOfflineGameStatus('playing');
     }, []);
 
-    const handleReady = useCallback(() => {
+    const handleReady = () => {
         if (mode === 'online') {
             roomRef.current?.send("player_ready");
-            hasPlayedRef.current = true; // Mark that the player has attempted to play
         } else {
             resetOfflineGame();
         }
-    }, [mode, resetOfflineGame]);
+    };
 
     const createScaledBox = (mesh: THREE.Mesh, scale: number): THREE.Box3 => {
         mesh.updateMatrixWorld();
@@ -439,10 +444,18 @@ export default function Game({ mode, playerName: playerNameProp }: GameProps) {
                     client = new Colyseus.Client(endpoint);
                     const room = await client.joinOrCreate<VoxelAcesState>("voxel_aces_room", { playerName: playerNameProp, controlStyle });
                     roomRef.current = room;
-                    setIsConnected(true);
                     isConnectingRef.current = false;
+                    
+                    room.onStateChange(() => {
+                        setGameStatus(getGameStatus());
+                    });
 
-                    room.onLeave(() => { if (isMounted) { setIsConnected(false); router.push('/online'); } });
+                    room.onLeave(() => { 
+                        if (isMounted) { 
+                            setGameStatus('loading');
+                            router.push('/online'); 
+                        } 
+                    });
                     
                     room.state.players.onAdd((player, sessionId) => {
                         const isMe = sessionId === room?.sessionId;
@@ -453,11 +466,10 @@ export default function Game({ mode, playerName: playerNameProp }: GameProps) {
                         localPlanes[sessionId] = planeMesh;
                         scene.add(planeMesh);
                         if(isMe) {
-                            setPlayerHealth(player.health); // Set initial health
+                            setPlayerHealth(player.health);
                             player.listen("health", (currentValue) => setPlayerHealth(currentValue));
                             player.listen("kills", (currentValue) => setScore(currentValue));
                             player.listen("gunOverheat", (currentValue) => setGunOverheat(currentValue));
-                            // No need to listen to isReady, we derive it from the gameStatus
                         }
                     });
 
@@ -474,7 +486,7 @@ export default function Game({ mode, playerName: playerNameProp }: GameProps) {
                     
                     inputInterval = setInterval(() => {
                         const currentRoom = roomRef.current;
-                        if (currentRoom?.sessionId) {
+                        if (currentRoom?.state && currentRoom?.sessionId) {
                              const me = currentRoom.state.players.get(currentRoom.sessionId);
                              if (me?.isReady) {
                                 const playerInput = {
@@ -503,22 +515,24 @@ export default function Game({ mode, playerName: playerNameProp }: GameProps) {
                 const delta = lastTime > 0 ? (time - lastTime) / 1000 : 1/60;
                 lastTime = time;
 
-                const currentRoom = roomRef.current;
+                const currentStatus = getGameStatus();
+                if(gameStatus !== currentStatus) {
+                    setGameStatus(currentStatus);
+                }
+                
                 let myPlane: THREE.Group | null = null;
+                const currentRoom = roomRef.current;
 
                 if (mode === 'offline') {
-                    if (offlineGameStatus !== 'playing') {
+                    if (offlineGameStatusRef.current !== 'playing') {
                         renderer.render(scene, camera);
                         return;
                     }
 
                     myPlane = localPlanes['offline_player'];
                     const playerState = offlinePlayerRef.current;
-                    const visualGroup = myPlane?.children[0] as THREE.Group;
-                    if(visualGroup) visualGroup.quaternion.set(0,0,0,1);
-
+                    
                     let pitch = 0; let roll = 0;
-                    const useArcadeDesktop = controlStyle === 'arcade' && !isMobile;
                     if (onScreenControls && isMobile) {
                         pitch = -joystickInput.current.y;
                         roll = -joystickInput.current.x;
@@ -528,7 +542,8 @@ export default function Game({ mode, playerName: playerNameProp }: GameProps) {
                         if (keysPressed.current['a']) roll = 1;
                         if (keysPressed.current['d']) roll = -1;
                     }
-                    if (useArcadeDesktop) { pitch *= -1; }
+                    if (controlStyle === 'realistic' && !isMobile) { pitch *= -1; }
+
                     if (pitch !== 0) playerState.quaternion.multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), PITCH_SPEED * pitch * delta));
                     if (roll !== 0) playerState.quaternion.multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 0, 1), ROLL_SPEED * roll * delta));
                                         
@@ -578,12 +593,47 @@ export default function Game({ mode, playerName: playerNameProp }: GameProps) {
                         
                         for (const obstacle of collidableObjects) { if (playerHitbox.intersectsBox(obstacle)) { hasCrashed = true; break; } }
                         if (boundaryWarningTimerRef.current <= 0 || altitudeWarningTimerRef.current <= 0) { hasCrashed = true; }
-                        if (hasCrashed && playerState.health > 0) { playerState.health = 0; setPlayerHealth(0); setOfflineGameStatus('gameover'); }
+                        if (hasCrashed && playerState.health > 0) { 
+                            playerState.health = 0; 
+                            setPlayerHealth(0);
+                            offlineGameStatusRef.current = 'gameover';
+                            setOfflineGameStatus('gameover');
+                        }
                     }
-                } else if (mode === 'online' && currentRoom?.state) {
-                    const localPlayer = currentRoom.sessionId ? currentRoom.state.players.get(currentRoom.sessionId) : null;
-                    myPlane = currentRoom.sessionId ? localPlanes[currentRoom.sessionId] : null;
+                }
+                
+                // This block runs for BOTH online and offline mode
+                const localPlayerPos = (mode === 'online' && currentRoom?.sessionId && localPlanes[currentRoom.sessionId]) 
+                    ? localPlanes[currentRoom.sessionId].position 
+                    : (myPlane ? myPlane.position : null);
 
+                if (localPlayerPos) {
+                    const currentAltitude = localPlayerPos.y - GROUND_Y;
+                    setAltitude(currentAltitude);
+                    
+                    let altWarn = currentAltitude > MAX_ALTITUDE;
+                    if (altWarn) { altitudeWarningTimerRef.current = Math.max(0, altitudeWarningTimerRef.current - delta); setWhiteoutOpacity(Math.max(0, 1 - (altitudeWarningTimerRef.current / 5))); } 
+                    else { altitudeWarningTimerRef.current = 5; setWhiteoutOpacity(0); }
+                    setShowAltitudeWarning(altWarn);
+
+                    let boundaryWarn = Math.abs(localPlayerPos.x) > BOUNDARY || Math.abs(localPlayerPos.z) > BOUNDARY;
+                    if (boundaryWarn) { boundaryWarningTimerRef.current = Math.max(0, boundaryWarningTimerRef.current - delta); } 
+                    else { boundaryWarningTimerRef.current = 7; }
+                    setShowBoundaryWarning(boundaryWarn);
+                }
+
+                if (currentStatus === 'playing') {
+                     if (localPlayerPos && myPlane) {
+                         const cameraOffset = new THREE.Vector3(0, 8, 15);
+                         const idealOffset = cameraOffset.clone().applyQuaternion(myPlane.quaternion);
+                         const idealPosition = myPlane.position.clone().add(idealOffset);
+                         camera.position.lerp(idealPosition, 0.1);
+                         camera.lookAt(myPlane.position);
+                     }
+                }
+                
+                // Interpolation for online mode
+                if (mode === 'online' && currentRoom?.state) {
                     currentRoom.state.players.forEach((player, sessionId) => {
                         const planeMesh = localPlanes[sessionId];
                         if(planeMesh) {
@@ -592,41 +642,18 @@ export default function Game({ mode, playerName: playerNameProp }: GameProps) {
                                 return;
                             }
                             planeMesh.visible = true;
-                            const visualGroup = planeMesh.children[0] as THREE.Group;
                             const newPos = new THREE.Vector3(player.x, player.y, player.z);
                             const newQuat = new THREE.Quaternion(player.qx, player.qy, player.qz, player.qw);
                             planeMesh.position.lerp(newPos, INTERPOLATION_FACTOR);
                             planeMesh.quaternion.slerp(newQuat, INTERPOLATION_FACTOR);
-                            if (visualGroup) visualGroup.quaternion.set(0, 0, 0, 1);
                         }
                     });
                     currentRoom.state.bullets.forEach((bullet, bulletId) => {
                         const bulletMesh = localBullets[bulletId];
                         if (bulletMesh) { bulletMesh.position.set(bullet.x, bullet.y, bullet.z); }
                     });
-
-                    // Only update warnings and camera if the player is actively playing
-                    if (myPlane && localPlayer?.isReady && localPlayer?.health > 0) {
-                        const currentAltitude = myPlane.position.y - GROUND_Y;
-                        setAltitude(currentAltitude);
-                        
-                        let altWarn = currentAltitude > MAX_ALTITUDE;
-                        if (altWarn) { altitudeWarningTimerRef.current = Math.max(0, altitudeWarningTimerRef.current - delta); setWhiteoutOpacity(Math.max(0, 1 - (altitudeWarningTimerRef.current / 5))); } 
-                        else { altitudeWarningTimerRef.current = 5; setWhiteoutOpacity(0); }
-                        setShowAltitudeWarning(altWarn);
-
-                        let boundaryWarn = Math.abs(myPlane.position.x) > BOUNDARY || Math.abs(myPlane.position.z) > BOUNDARY;
-                        if (boundaryWarn) { boundaryWarningTimerRef.current = Math.max(0, boundaryWarningTimerRef.current - delta); } 
-                        else { boundaryWarningTimerRef.current = 7; }
-                        setShowBoundaryWarning(boundaryWarn);
-
-                        const cameraOffset = new THREE.Vector3(0, 8, 15);
-                        const idealOffset = cameraOffset.clone().applyQuaternion(myPlane.quaternion);
-                        const idealPosition = myPlane.position.clone().add(idealOffset);
-                        camera.position.lerp(idealPosition, 0.1);
-                        camera.lookAt(myPlane.position);
-                    }
                 }
+
                 renderer.render(scene, camera);
             };
             gameLoop(performance.now());
@@ -665,21 +692,21 @@ export default function Game({ mode, playerName: playerNameProp }: GameProps) {
                 </div>
             )}
             
-            {(gameStatus === 'offline-menu' || gameStatus === 'offline-gameover') && (
+            {(gameStatus === 'menu' || gameStatus === 'gameover' && mode === 'offline') && (
                  <div className="absolute inset-0 flex items-center justify-center z-10">
                     <Card className="max-w-md mx-auto bg-card/80 backdrop-blur-sm border-primary/20 shadow-xl text-center">
                         <CardHeader>
                             <CardTitle className="text-5xl font-bold font-headline text-primary">
-                                {gameStatus === 'offline-gameover' ? 'Shot Down!' : 'Ready for Takeoff?'}
+                                {gameStatus === 'gameover' ? 'Shot Down!' : 'Ready for Takeoff?'}
                             </CardTitle>
                         </CardHeader>
                         <CardContent className="p-8 pt-0">
-                             {gameStatus === 'offline-gameover' 
+                             {gameStatus === 'gameover' 
                                 ? <p className="text-muted-foreground mb-6">You crashed! Better luck next time.</p>
                                 : <p className="text-muted-foreground mb-6">Use WASD to steer, Shift for boost, and Left Click or Space to fire. Good luck!</p>
                              }
                             <Button size="lg" className="w-full text-lg py-6" onClick={handleReady}>
-                                {gameStatus === 'offline-gameover' ? 'Fly Again' : 'Start Flight'}
+                                {gameStatus === 'gameover' ? 'Fly Again' : 'Start Flight'}
                             </Button>
                         </CardContent>
                     </Card>
@@ -693,6 +720,19 @@ export default function Game({ mode, playerName: playerNameProp }: GameProps) {
                         <CardContent className="p-8 pt-0">
                             <p className="text-muted-foreground mb-6">The arena is waiting. Join the battle when you're ready.</p>
                             <Button size="lg" className="w-full text-lg py-6" onClick={handleReady}>Join the Battle</Button>
+                        </CardContent>
+                    </Card>
+                </div>
+            )}
+            
+            {gameStatus === 'gameover' && mode === 'online' && (
+                <div className="absolute inset-0 flex items-center justify-center bg-black/50 z-10">
+                     <Card className="max-w-md mx-auto bg-card/80 backdrop-blur-sm border-destructive/50 shadow-xl text-center">
+                        <CardHeader><CardTitle className="text-5xl font-bold font-headline text-destructive">Shot Down!</CardTitle></CardHeader>
+                        <CardContent className="p-8 pt-0">
+                             <p className="text-foreground mb-6">You were shot down with a final score of <span className="font-bold text-accent">{score}</span> kills.</p>
+                            <Button size="lg" className="w-full text-lg py-6" onClick={handleReady}>Play Again</Button>
+                            <Button size="lg" variant="secondary" className="w-full text-lg py-6 mt-2" onClick={handleLeaveGame}>Back to Menu</Button>
                         </CardContent>
                     </Card>
                 </div>
@@ -722,22 +762,10 @@ export default function Game({ mode, playerName: playerNameProp }: GameProps) {
                 </div>
             )}
             
-            {(gameStatus === 'playing' || gameStatus === 'offline-playing') ? (
+            {gameStatus === 'playing' ? (
                  <HUD score={score} wave={wave} health={playerHealth} overheat={gunOverheat} altitude={altitude} mode={mode} players={roomRef.current?.state.players} onLeaveGame={handleLeaveGame} />
             ) : null}
 
-            {gameStatus === 'gameover' && (
-                <div className="absolute inset-0 flex items-center justify-center bg-black/50 z-10">
-                     <Card className="max-w-md mx-auto bg-card/80 backdrop-blur-sm border-destructive/50 shadow-xl text-center">
-                        <CardHeader><CardTitle className="text-5xl font-bold font-headline text-destructive">Shot Down!</CardTitle></CardHeader>
-                        <CardContent className="p-8 pt-0">
-                             <p className="text-foreground mb-6">You were shot down with a final score of <span className="font-bold text-accent">{score}</span> kills.</p>
-                            <Button size="lg" className="w-full text-lg py-6" onClick={handleReady}>Play Again</Button>
-                            <Button size="lg" variant="secondary" className="w-full text-lg py-6 mt-2" onClick={handleLeaveGame}>Back to Menu</Button>
-                        </CardContent>
-                    </Card>
-                </div>
-            )}
         </div>
     );
 }
