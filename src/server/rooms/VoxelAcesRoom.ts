@@ -130,7 +130,7 @@ export class VoxelAcesRoom extends Room<VoxelAcesState> {
     onJoin(client: Client, options: any) {
         console.log(client.sessionId, "joined with options:", options);
         // Ensure options is a valid object before proceeding.
-        const safeOptions = (options && typeof options === 'object') ? options : {};
+        const safeOptions = options || {};
         this.addPlayer(client.sessionId, false, safeOptions);
         this.checkBotPopulation();
     }
@@ -144,7 +144,14 @@ export class VoxelAcesRoom extends Room<VoxelAcesState> {
     
     addPlayer(sessionId: string, isAI: boolean, options: any = {}) {
         const player = new Player();
-        player.name = isAI ? `Bot ${this.botNames[Math.floor(Math.random() * this.botNames.length)]}` : (options.playerName || "Pilot");
+        
+        const providedName = options.playerName;
+        const finalPlayerName = (typeof providedName === 'string' && providedName.trim())
+            ? providedName.trim().substring(0, 16)
+            : "Pilot";
+
+        player.name = isAI ? `Bot ${this.botNames[Math.floor(Math.random() * this.botNames.length)]}` : finalPlayerName;
+        
         player.isAI = isAI;
         player.health = 0;
         player.gunOverheat = 0;
