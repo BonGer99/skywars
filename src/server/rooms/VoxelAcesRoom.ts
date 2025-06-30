@@ -128,11 +128,25 @@ export class VoxelAcesRoom extends Room<VoxelAcesState> {
 
 
     onJoin(client: Client, options: any) {
-        console.log(client.sessionId, "joined with options:", options);
-        // Sanitize options to prevent server crash from malformed client data.
-        const safeOptions = (typeof options === 'object' && options !== null) ? options : {};
+        console.log(client.sessionId, "joined!");
+
+        // 1. Sanitize and validate ALL connection options here.
+        const providedName = (options && typeof options.playerName === 'string') ? options.playerName.trim().substring(0, 16) : null;
+        const playerName = (providedName && providedName.length > 0) ? providedName : "Pilot";
+
+        const controlStyle = (options && (options.controlStyle === 'realistic' || options.controlStyle === 'arcade'))
+            ? options.controlStyle
+            : 'arcade';
+
+        // 2. Create a clean object to pass down.
+        const validatedOptions = {
+            playerName,
+            controlStyle
+        };
+
+        // 3. Pass the guaranteed-safe object.
+        this.addPlayer(client.sessionId, false, validatedOptions);
         
-        this.addPlayer(client.sessionId, false, safeOptions);
         this.checkBotPopulation();
     }
 
@@ -143,19 +157,10 @@ export class VoxelAcesRoom extends Room<VoxelAcesState> {
         this.checkBotPopulation();
     }
     
-    addPlayer(sessionId: string, isAI: boolean, options: any = {}) {
+    addPlayer(sessionId: string, isAI: boolean, options: { playerName: string, controlStyle: ControlStyle }) {
         const player = new Player();
         
-        const providedName = options.playerName;
-        const finalPlayerName = (typeof providedName === 'string' && providedName.trim().length > 0)
-            ? providedName.trim().substring(0, 16)
-            : "Pilot";
-
-        const controlStyle = (options.controlStyle === 'realistic' || options.controlStyle === 'arcade') 
-            ? options.controlStyle 
-            : 'arcade';
-        
-        player.name = isAI ? `Bot ${this.botNames[Math.floor(Math.random() * this.botNames.length)]}` : finalPlayerName;
+        player.name = isAI ? `Bot ${this.botNames[Math.floor(Math.random() * this.botNames.length)]}` : options.playerName;
         player.isAI = isAI;
         player.health = 0;
         player.gunOverheat = 0;
@@ -171,7 +176,7 @@ export class VoxelAcesRoom extends Room<VoxelAcesState> {
             gunOverheat: 0,
             boundaryTimer: 7,
             altitudeTimer: 5,
-            controlStyle: controlStyle,
+            controlStyle: options.controlStyle,
             isAI: isAI,
             lastAiUpdate: 0,
             isDescendingFromAltitude: false,
@@ -239,7 +244,7 @@ export class VoxelAcesRoom extends Room<VoxelAcesState> {
         if (currentBotCount < desiredBotCount) {
             for (let i = 0; i < desiredBotCount - currentBotCount; i++) {
                 const botId = `bot_${Math.random().toString(36).substring(2, 9)}`;
-                this.addPlayer(botId, true);
+                this.addPlayer(botId, true, { playerName: 'Bot', controlStyle: 'arcade' });
             }
         } else if (currentBotCount > desiredBotCount) {
             let botsRemoved = 0;
