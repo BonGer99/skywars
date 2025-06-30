@@ -126,28 +126,25 @@ export class VoxelAcesRoom extends Room<VoxelAcesState> {
         }
     }
 
-
     onJoin(client: Client, options: any) {
-        console.log(client.sessionId, "joined!");
+        try {
+            console.log(client.sessionId, "attempting to join with options:", options);
 
-        // 1. Sanitize and validate ALL connection options here.
-        const providedName = (options && typeof options.playerName === 'string') ? options.playerName.trim().substring(0, 16) : null;
-        const playerName = (providedName && providedName.length > 0) ? providedName : "Pilot";
+            const playerName = (options && typeof options.playerName === 'string' && options.playerName.trim().length > 0)
+                ? options.playerName.trim().substring(0, 16)
+                : "Pilot";
+            
+            const controlStyle = (options && (options.controlStyle === 'realistic' || options.controlStyle === 'arcade'))
+                ? options.controlStyle
+                : 'arcade';
+    
+            this.addPlayer(client.sessionId, false, { playerName, controlStyle });
+            
+            this.checkBotPopulation();
 
-        const controlStyle = (options && (options.controlStyle === 'realistic' || options.controlStyle === 'arcade'))
-            ? options.controlStyle
-            : 'arcade';
-
-        // 2. Create a clean object to pass down.
-        const validatedOptions = {
-            playerName,
-            controlStyle
-        };
-
-        // 3. Pass the guaranteed-safe object.
-        this.addPlayer(client.sessionId, false, validatedOptions);
-        
-        this.checkBotPopulation();
+        } catch (e) {
+            console.error(`[VoxelAcesRoom] CRASH in onJoin for client ${client.sessionId}:`, e);
+        }
     }
 
     onLeave(client: Client, consented: boolean) {
