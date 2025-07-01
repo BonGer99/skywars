@@ -161,7 +161,7 @@ export class VoxelAcesRoom extends Room<VoxelAcesState> {
         
         player.name = isAI ? `Bot ${this.botNames[Math.floor(Math.random() * this.botNames.length)]}` : options.playerName;
         player.isAI = isAI;
-        player.health = 0;
+        player.health = PLAYER_HEALTH; // Set health to full initially to avoid client-side race condition.
         player.gunOverheat = 0;
         player.isReady = false;
 
