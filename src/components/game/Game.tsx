@@ -238,7 +238,6 @@ export default function Game({ mode, playerName: playerNameProp }: GameProps) {
     const isMobile = useIsMobile();
     
     const offlineGameStatusRef = useRef<OfflineGameStatus>(mode === 'offline' ? 'menu' : 'playing');
-    const [offlineGameStatus, setOfflineGameStatus] = useState<OfflineGameStatus>(offlineGameStatusRef.current);
     
     const [showAltitudeWarning, setShowAltitudeWarning] = useState(false);
     const altitudeWarningTimerRef = useRef(5);
@@ -249,14 +248,15 @@ export default function Game({ mode, playerName: playerNameProp }: GameProps) {
     const [whiteoutOpacity, setWhiteoutOpacity] = useState(0);
 
     const getGameStatus = (): OnlineGameStatus | OfflineGameStatus => {
+        const room = roomRef.current;
         if (mode === 'offline') {
             return offlineGameStatusRef.current;
         }
 
-        const room = roomRef.current;
-        if (!room || !room.sessionId || !room.state) {
+        if (!room || !room.state || !room.sessionId) {
             return 'loading';
         }
+        
         const me = room.state.players.get(room.sessionId);
         if (!me) {
             return 'loading';
@@ -345,7 +345,7 @@ export default function Game({ mode, playerName: playerNameProp }: GameProps) {
         altitudeWarningTimerRef.current = 5;
         boundaryWarningTimerRef.current = 7;
         offlineGameStatusRef.current = 'playing';
-        setOfflineGameStatus('playing');
+        setGameStatus('playing');
         startNewWave();
     }, [startNewWave]);
 
@@ -542,6 +542,11 @@ export default function Game({ mode, playerName: playerNameProp }: GameProps) {
                     const room = await client.joinOrCreate<VoxelAcesState>("voxel_aces_room", { playerName: playerNameProp, controlStyle });
                     roomRef.current = room;
                     isConnectingRef.current = false;
+                    
+                    room.onStateChange.once(() => {
+                        // This ensures we have the initial state before proceeding
+                        setGameStatus(getGameStatus());
+                    });
                     
                     room.onStateChange(() => {
                         if (!isMounted) return;
@@ -746,7 +751,7 @@ export default function Game({ mode, playerName: playerNameProp }: GameProps) {
                              if(playerState.health <= 0) {
                                  playerState.health = 0;
                                  offlineGameStatusRef.current = 'gameover';
-                                 setOfflineGameStatus('gameover');
+                                 setGameStatus('gameover');
                              }
                              return false; // remove bullet
                          }
@@ -766,13 +771,13 @@ export default function Game({ mode, playerName: playerNameProp }: GameProps) {
                             playerState.health = 0; 
                             setPlayerHealth(0);
                             offlineGameStatusRef.current = 'gameover';
-                            setOfflineGameStatus('gameover');
+                            setGameStatus('gameover');
                         }
                     }
                 }
                 
                 // This block runs for BOTH online and offline mode
-                const localPlayerPos = (mode === 'online' && currentRoom?.sessionId && localPlanes[currentRoom.sessionId]) 
+                const localPlayerPos = (mode === 'online' && currentRoom?.state && currentRoom?.sessionId && localPlanes[currentRoom.sessionId]) 
                     ? localPlanes[currentRoom.sessionId].position 
                     : (myPlane ? myPlane.position : null);
 
@@ -798,6 +803,15 @@ export default function Game({ mode, playerName: playerNameProp }: GameProps) {
                          const idealPosition = myPlane.position.clone().add(idealOffset);
                          camera.position.lerp(idealPosition, 0.1);
                          camera.lookAt(myPlane.position);
+                     } else if (mode === 'online' && currentRoom?.state && currentRoom?.sessionId) {
+                        const myOnlinePlane = localPlanes[currentRoom.sessionId];
+                        if (myOnlinePlane) {
+                            const cameraOffset = new THREE.Vector3(0, 8, 15);
+                            const idealOffset = cameraOffset.clone().applyQuaternion(myOnlinePlane.quaternion);
+                            const idealPosition = myOnlinePlane.position.clone().add(idealOffset);
+                            camera.position.lerp(idealPosition, 0.1);
+                            camera.lookAt(myOnlinePlane.position);
+                        }
                      }
                 }
                 
@@ -813,8 +827,19 @@ export default function Game({ mode, playerName: playerNameProp }: GameProps) {
                             planeMesh.visible = true;
                             const newPos = new THREE.Vector3(player.x, player.y, player.z);
                             const newQuat = new THREE.Quaternion(player.qx, player.qy, player.qz, player.qw);
-                            planeMesh.position.lerp(newPos, INTERPOLATION_FACTOR);
-                            planeMesh.quaternion.slerp(newQuat, INTERPOLATION_FACTOR);
+                            
+                            // Check the distance between the client's current position and the server's new position.
+                            const distance = planeMesh.position.distanceTo(newPos);
+
+                            // If the distance is very large, it's a respawn. Teleport the plane instantly.
+                            // Otherwise, interpolate for smooth movement.
+                            if (distance > 1000) { 
+                                planeMesh.position.copy(newPos);
+                                planeMesh.quaternion.copy(newQuat);
+                            } else {
+                                planeMesh.position.lerp(newPos, INTERPOLATION_FACTOR);
+                                planeMesh.quaternion.slerp(newQuat, INTERPOLATION_FACTOR);
+                            }
                         }
                     });
                     currentRoom.state.bullets.forEach((bullet, bulletId) => {
@@ -847,68 +872,96 @@ export default function Game({ mode, playerName: playerNameProp }: GameProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
 
-    return (
-        <div className="relative w-screen h-screen bg-background overflow-hidden touch-none" onContextMenu={(e) => e.preventDefault()}>
-            <div ref={mountRef} className="absolute top-0 left-0 w-full h-full" />
-            
-            {onScreenControls && isMobile && gameStatus === 'playing' && <OnScreenControls joystickInput={joystickInput} keysPressed={keysPressed} />}
+    const [offlineUIState, setOfflineUIState] = useState<'menu' | 'playing' | 'gameover'>('menu');
+    useEffect(() => {
+        if (mode === 'offline') {
+            setOfflineUIState(offlineGameStatusRef.current);
+        }
+    }, [gameStatus, mode]);
 
-            <div className="absolute inset-0 bg-white z-10 pointer-events-none" style={{ opacity: whiteoutOpacity, transition: 'opacity 0.5s' }} />
 
-            {gameStatus === 'loading' && (
+    const renderContent = () => {
+        const currentStatus = getGameStatus();
+
+        if (currentStatus === 'loading') {
+            return (
                 <div className="absolute inset-0 flex flex-col items-center justify-center bg-background z-20">
                     <Loader2 className="h-16 w-16 animate-spin text-primary" />
                     <p className="text-xl mt-4 font-headline">Connecting to Arena...</p>
                 </div>
-            )}
-            
-            {(gameStatus === 'menu' || gameStatus === 'gameover' && mode === 'offline') && (
-                 <div className="absolute inset-0 flex items-center justify-center z-10">
-                    <Card className="max-w-md mx-auto bg-card/80 backdrop-blur-sm border-primary/20 shadow-xl text-center">
-                        <CardHeader>
-                            <CardTitle className="text-5xl font-bold font-headline text-primary">
-                                {gameStatus === 'gameover' ? 'Shot Down!' : 'Ready for Takeoff?'}
-                            </CardTitle>
-                        </CardHeader>
-                        <CardContent className="p-8 pt-0">
-                             {gameStatus === 'gameover' 
-                                ? <p className="text-muted-foreground mb-6">You were defeated on wave {wave} with a score of {score}. Better luck next time!</p>
-                                : <p className="text-muted-foreground mb-6">Use WASD to steer, Shift for boost, and Left Click or Space to fire. Good luck!</p>
-                             }
-                            <Button size="lg" className="w-full text-lg py-6" onClick={handleReady}>
-                                {gameStatus === 'gameover' ? 'Fly Again' : 'Start Flight'}
-                            </Button>
-                        </CardContent>
-                    </Card>
-                </div>
-            )}
-            
-            {gameStatus === 'ready' && (
-                <div className="absolute inset-0 flex items-center justify-center z-10">
-                    <Card className="max-w-md mx-auto bg-card/80 backdrop-blur-sm border-primary/20 shadow-xl text-center">
-                        <CardHeader><CardTitle className="text-5xl font-bold font-headline text-primary">Ready to Fly?</CardTitle></CardHeader>
-                        <CardContent className="p-8 pt-0">
-                            <p className="text-muted-foreground mb-6">The arena is waiting. Join the battle when you're ready.</p>
-                            <Button size="lg" className="w-full text-lg py-6" onClick={handleReady}>Join the Battle</Button>
-                        </CardContent>
-                    </Card>
-                </div>
-            )}
-            
-            {gameStatus === 'gameover' && mode === 'online' && (
-                <div className="absolute inset-0 flex items-center justify-center bg-black/50 z-10">
-                     <Card className="max-w-md mx-auto bg-card/80 backdrop-blur-sm border-destructive/50 shadow-xl text-center">
-                        <CardHeader><CardTitle className="text-5xl font-bold font-headline text-destructive">Shot Down!</CardTitle></CardHeader>
-                        <CardContent className="p-8 pt-0">
-                             <p className="text-foreground mb-6">You were shot down with a final score of <span className="font-bold text-accent">{score}</span> kills.</p>
-                            <Button size="lg" className="w-full text-lg py-6" onClick={handleReady}>Play Again</Button>
-                            <Button size="lg" variant="secondary" className="w-full text-lg py-6 mt-2" onClick={handleLeaveGame}>Back to Menu</Button>
-                        </CardContent>
-                    </Card>
-                </div>
-            )}
+            );
+        }
 
-            {showAltitudeWarning && gameStatus === 'playing' && (
+        if (mode === 'offline') {
+             if (currentStatus === 'menu' || currentStatus === 'gameover') {
+                return (
+                    <div className="absolute inset-0 flex items-center justify-center z-10">
+                        <Card className="max-w-md mx-auto bg-card/80 backdrop-blur-sm border-primary/20 shadow-xl text-center">
+                            <CardHeader>
+                                <CardTitle className="text-5xl font-bold font-headline text-primary">
+                                    {currentStatus === 'gameover' ? 'Shot Down!' : 'Ready for Takeoff?'}
+                                </CardTitle>
+                            </CardHeader>
+                            <CardContent className="p-8 pt-0">
+                                {currentStatus === 'gameover' 
+                                    ? <p className="text-muted-foreground mb-6">You were defeated on wave {wave} with a score of {score}. Better luck next time!</p>
+                                    : <p className="text-muted-foreground mb-6">Use WASD to steer, Shift for boost, and Left Click or Space to fire. Good luck!</p>
+                                }
+                                <Button size="lg" className="w-full text-lg py-6" onClick={handleReady}>
+                                    {currentStatus === 'gameover' ? 'Fly Again' : 'Start Flight'}
+                                </Button>
+                            </CardContent>
+                        </Card>
+                    </div>
+                );
+            }
+        }
+
+        if (mode === 'online') {
+            if (currentStatus === 'ready') {
+                return (
+                     <div className="absolute inset-0 flex items-center justify-center z-10">
+                        <Card className="max-w-md mx-auto bg-card/80 backdrop-blur-sm border-primary/20 shadow-xl text-center">
+                            <CardHeader><CardTitle className="text-5xl font-bold font-headline text-primary">Ready to Fly?</CardTitle></CardHeader>
+                            <CardContent className="p-8 pt-0">
+                                <p className="text-muted-foreground mb-6">The arena is waiting. Join the battle when you're ready.</p>
+                                <Button size="lg" className="w-full text-lg py-6" onClick={handleReady}>Join the Battle</Button>
+                            </CardContent>
+                        </Card>
+                    </div>
+                );
+            }
+            if (currentStatus === 'gameover') {
+                 return (
+                    <div className="absolute inset-0 flex items-center justify-center bg-black/50 z-10">
+                         <Card className="max-w-md mx-auto bg-card/80 backdrop-blur-sm border-destructive/50 shadow-xl text-center">
+                            <CardHeader><CardTitle className="text-5xl font-bold font-headline text-destructive">Shot Down!</CardTitle></CardHeader>
+                            <CardContent className="p-8 pt-0">
+                                 <p className="text-foreground mb-6">You were shot down with a final score of <span className="font-bold text-accent">{score}</span> kills.</p>
+                                <Button size="lg" className="w-full text-lg py-6" onClick={handleReady}>Play Again</Button>
+                                <Button size="lg" variant="secondary" className="w-full text-lg py-6 mt-2" onClick={handleLeaveGame}>Back to Menu</Button>
+                            </CardContent>
+                        </Card>
+                    </div>
+                );
+            }
+        }
+        
+        return null;
+    }
+
+
+    return (
+        <div className="relative w-screen h-screen bg-background overflow-hidden touch-none" onContextMenu={(e) => e.preventDefault()}>
+            <div ref={mountRef} className="absolute top-0 left-0 w-full h-full" />
+            
+            {onScreenControls && isMobile && getGameStatus() === 'playing' && <OnScreenControls joystickInput={joystickInput} keysPressed={keysPressed} />}
+
+            <div className="absolute inset-0 bg-white z-10 pointer-events-none" style={{ opacity: whiteoutOpacity, transition: 'opacity 0.5s' }} />
+            
+            {renderContent()}
+
+            {showAltitudeWarning && getGameStatus() === 'playing' && (
                 <div className="absolute top-1/3 left-1/2 -translate-x-1/2 z-20 text-center">
                     <Card className="bg-destructive/80 text-destructive-foreground p-4 border-2 border-destructive-foreground">
                         <CardTitle className="text-3xl font-bold">WARNING: ALTITUDE CRITICAL</CardTitle>
@@ -920,7 +973,7 @@ export default function Game({ mode, playerName: playerNameProp }: GameProps) {
                 </div>
             )}
 
-            {showBoundaryWarning && gameStatus === 'playing' && (
+            {showBoundaryWarning && getGameStatus() === 'playing' && (
                 <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 z-20 text-center">
                      <Card className="bg-destructive/80 text-destructive-foreground p-4 border-2 border-destructive-foreground">
                         <CardTitle className="text-3xl font-bold">WARNING: LEAVING BATTLEFIELD</CardTitle>
@@ -932,7 +985,7 @@ export default function Game({ mode, playerName: playerNameProp }: GameProps) {
                 </div>
             )}
             
-            {gameStatus === 'playing' ? (
+            {getGameStatus() === 'playing' ? (
                  <HUD score={score} wave={wave} health={playerHealth} overheat={gunOverheat} altitude={altitude} mode={mode} players={roomRef.current?.state.players} leaderboard={roomRef.current?.state.leaderboard} onLeaveGame={handleLeaveGame} />
             ) : null}
 
