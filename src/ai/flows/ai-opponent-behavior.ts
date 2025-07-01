@@ -15,14 +15,14 @@ import {z} from 'genkit';
 
 const OpponentBehaviorInputSchema = z.object({
   waveNumber: z.number().describe('The current wave number in the survival mode.'),
-  playerSkillLevel: z.string().describe('The skill level of the player (e.g., beginner, intermediate, advanced).'),
+  playerSkillLevel: z.number().describe('A number from 1 to 100, where 100 is highly skilled.'),
 });
 export type OpponentBehaviorInput = z.infer<typeof OpponentBehaviorInputSchema>;
 
 const OpponentBehaviorOutputSchema = z.object({
-  attackPattern: z.string().describe('The attack pattern of the AI opponent (e.g., aggressive, defensive, erratic).'),
-  evasionTactics: z.string().describe('The evasion tactics used by the AI opponent (e.g., barrel rolls, loop-the-loops, dives).'),
-  difficultyLevel: z.string().describe('The overall difficulty level of the AI opponent (e.g., easy, medium, hard).'),
+  attackPattern: z.string().describe('The attack pattern of the AI opponent (e.g., "head-on," "strafing runs," "tailing").'),
+  evasionTactics: z.string().describe('The evasion tactics used by the AI opponent (e.g., "none," "basic weave," "barrel rolls," "hard break").'),
+  difficultyLevel: z.string().describe('The overall difficulty level of the AI opponent (e.g., "easy," "medium," "hard").'),
 });
 export type OpponentBehaviorOutput = z.infer<typeof OpponentBehaviorOutputSchema>;
 
@@ -34,27 +34,17 @@ const prompt = ai.definePrompt({
   name: 'opponentBehaviorPrompt',
   input: {schema: OpponentBehaviorInputSchema},
   output: {schema: OpponentBehaviorOutputSchema},
-  prompt: `You are an expert game AI designer specializing in creating challenging and engaging AI opponents for arcade flight combat games.
+  prompt: `You are an expert game AI designer. Generate AI opponent behavior for an arcade flight combat game based on the following inputs:
 
-You will use the wave number and player skill level to determine the attack pattern, evasion tactics, and overall difficulty level of the AI opponent.
+- Wave Number: {{{waveNumber}}}
+- Player Skill Rating: {{{playerSkillLevel}}} (A number from 1 to 100, where 100 is highly skilled)
 
-As the wave number increases, the AI opponent should become more aggressive and use more advanced evasion tactics.
+A higher skill rating should result in more aggressive attack patterns and more complex evasion tactics. A lower skill rating should result in more predictable patterns.
 
-Consider these wave number to difficulty level:
-
-Wave 1-3: Easy
-Wave 4-6: Medium
-Wave 7-9: Hard
-Wave 10+: Very Hard
-
-Player skill level: {{{playerSkillLevel}}}
-Wave number: {{{waveNumber}}}
-
-Based on the wave number and player skill level, generate the AI opponent's behavior.
-
-Attack pattern:
-Evasion tactics:
-Difficulty level:`,
+Generate the following behavior properties:
+- attackPattern: (e.g., "head-on," "strafing runs," "tailing")
+- evasionTactics: (e.g., "none," "basic weave," "barrel rolls," "hard break")
+- difficultyLevel: (e.g., "easy," "medium," "hard")`,
 });
 
 const opponentBehaviorFlow = ai.defineFlow(

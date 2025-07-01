@@ -5,88 +5,40 @@ import { useState, useEffect } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Crown } from 'lucide-react';
-import type { MapSchema } from '@colyseus/schema';
-import type { Player as PlayerState } from '@/server/rooms/state/VoxelAcesState';
-import { useIsMobile } from '@/hooks/use-is-mobile';
+import type { ArraySchema } from '@colyseus/schema';
+import type { LeaderboardEntry } from '@/server/rooms/state/VoxelAcesState';
 
 interface ServerLeaderboardProps {
-  players: MapSchema<PlayerState>;
+  leaderboard: ArraySchema<LeaderboardEntry>;
 }
 
-type Player = {
-  id: string;
-  name: string;
-  kills: number;
-};
-
-export default function ServerLeaderboard({ players: playersMap }: ServerLeaderboardProps) {
-  const [leaderboard, setLeaderboard] = useState<Player[]>([]);
-  const isMobile = useIsMobile();
-
+export default function ServerLeaderboard({ leaderboard: leaderboardState }: ServerLeaderboardProps) {
+  const [leaderboard, setLeaderboard] = useState<LeaderboardEntry[]>([]);
+  
   useEffect(() => {
-    const leaderboardLimit = isMobile ? 3 : 5;
-    
-    const updateLeaderboard = () => {
-      const playersData: Player[] = [];
-      playersMap.forEach((player, id) => {
-        playersData.push({ id, name: player.name, kills: player.kills });
-      });
-      
-      const sortedPlayers = playersData
-        .sort((a, b) => b.kills - a.kills)
-        .slice(0, leaderboardLimit);
-        
-      setLeaderboard(sortedPlayers);
-    };
+    if (!leaderboardState) return;
 
+    // Function to copy state to local react state
+    const updateLeaderboard = () => {
+        setLeaderboard([...leaderboardState.slice()]);
+    };
+    
     // Initial update
     updateLeaderboard();
-
-    // This map will store the cleanup function for each player's onChange listener.
-    const playerCleanupCallbacks = new Map<string, () => void>();
-
-    const addPlayerListeners = (player: PlayerState, id: string) => {
-        // The `onChange` listener is a reliable way to detect any change.
-        player.onChange = () => {
-            updateLeaderboard();
-        };
-
-        // Store the cleanup function for this player.
-        playerCleanupCallbacks.set(id, () => {
-            player.onChange = null;
-        });
-    };
-
-    // Setup for existing players
-    playersMap.forEach(addPlayerListeners);
-
-    // onAdd returns a function that, when called, removes the listener.
-    const onAdd = playersMap.onAdd((player, id) => {
-        addPlayerListeners(player, id);
-        updateLeaderboard();
-    });
-
-    // onRemove also returns its own cleanup function.
-    const onRemove = playersMap.onRemove((_, id) => {
-        // Run and remove the cleanup functions for the player who left.
-        if (playerCleanupCallbacks.has(id)) {
-            playerCleanupCallbacks.get(id)?.();
-            playerCleanupCallbacks.delete(id);
-        }
-        updateLeaderboard();
-    });
-
-    // Cleanup when component unmounts
+    
+    // Listen for additions, removals, and changes
+    const onAdd = leaderboardState.onAdd(updateLeaderboard);
+    const onRemove = leaderboardState.onRemove(updateLeaderboard);
+    const onChange = leaderboardState.onChange(updateLeaderboard);
+    
+    // Cleanup listeners
     return () => {
-        // Unregister onAdd and onRemove from the playersMap
         onAdd();
         onRemove();
-
-        // Run all remaining cleanup functions for players still in the game
-        playerCleanupCallbacks.forEach(cleanup => cleanup());
-    }
-
-  }, [playersMap, isMobile]);
+        onChange();
+    };
+    
+  }, [leaderboardState]);
 
   return (
     <Card className="w-48 sm:w-60 bg-black/30 backdrop-blur-sm border-primary/50 text-primary-foreground p-1">

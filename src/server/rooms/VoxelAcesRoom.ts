@@ -1,5 +1,5 @@
 import { Room, Client } from "@colyseus/core";
-import { VoxelAcesState, Player, Bullet } from "./state/VoxelAcesState";
+import { VoxelAcesState, Player, Bullet, LeaderboardEntry } from "./state/VoxelAcesState";
 import * as THREE from 'three';
 
 // Constants
@@ -141,6 +141,7 @@ export class VoxelAcesRoom extends Room<VoxelAcesState> {
             this.addPlayer(client.sessionId, false, { playerName, controlStyle });
             
             this.checkBotPopulation();
+            this.updateLeaderboard();
 
         } catch (e) {
             console.error(`[VoxelAcesRoom] FATAL: Crash in onJoin for client ${client.sessionId}:`, e);
@@ -152,6 +153,7 @@ export class VoxelAcesRoom extends Room<VoxelAcesState> {
         this.state.players.delete(client.sessionId);
         this.serverPlayers.delete(client.sessionId);
         this.checkBotPopulation();
+        this.updateLeaderboard();
     }
     
     addPlayer(sessionId: string, isAI: boolean, options: { playerName: string, controlStyle: ControlStyle }) {
@@ -218,6 +220,7 @@ export class VoxelAcesRoom extends Room<VoxelAcesState> {
             serverPlayer.invulnerabilityTimer = 3;
 
             playerState.isReady = true;
+            this.updateLeaderboard();
         }
     }
 
@@ -258,6 +261,21 @@ export class VoxelAcesRoom extends Room<VoxelAcesState> {
 
     onDispose() {
         console.log("room", this.roomId, "disposing...");
+    }
+
+    updateLeaderboard() {
+        const sortedPlayers = Array.from(this.state.players.entries())
+            .sort(([, a], [, b]) => b.kills - a.kills)
+            .slice(0, 5); // Limit to top 5
+
+        this.state.leaderboard.clear();
+        sortedPlayers.forEach(([id, player]) => {
+            const entry = new LeaderboardEntry();
+            entry.id = id;
+            entry.name = player.name;
+            entry.kills = player.kills;
+            this.state.leaderboard.push(entry);
+        });
     }
 
     processPlayerInput(sessionId: string, delta: number) {
@@ -340,7 +358,7 @@ export class VoxelAcesRoom extends Room<VoxelAcesState> {
             let minDistance = Infinity;
 
             this.state.players.forEach((otherPlayer, otherSessionId) => {
-                if (otherSessionId === sessionId || !otherPlayer.isReady || otherPlayer.health <= 0) return;
+                if (otherSessionId === sessionId || !otherPlayer.isReady || otherPlayer.health <= 0 || otherPlayer.isAI) return; // AI only targets human players
                 
                 const otherServerPlayer = this.serverPlayers.get(otherSessionId)!;
                 const distance = serverPlayer.position.distanceTo(otherServerPlayer.position);
@@ -517,7 +535,10 @@ export class VoxelAcesRoom extends Room<VoxelAcesState> {
                     if (targetData.player.health <= 0) {
                         targetData.player.health = 0;
                         const shooter = this.state.players.get(bullet.ownerId);
-                        if (shooter) shooter.kills++;
+                        if (shooter) {
+                            shooter.kills++;
+                            this.updateLeaderboard();
+                        }
                     }
 
                     this.serverBullets.delete(bulletId);

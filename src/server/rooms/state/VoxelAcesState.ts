@@ -1,4 +1,4 @@
-import { Schema, MapSchema, type } from "@colyseus/schema";
+import { Schema, MapSchema, ArraySchema, type } from "@colyseus/schema";
 
 export class Player extends Schema {
     @type("string") name: string = "Pilot";
@@ -23,7 +23,14 @@ export class Bullet extends Schema {
     @type("number") z: number = 0;
 }
 
+export class LeaderboardEntry extends Schema {
+    @type("string") id: string;
+    @type("string") name: string;
+    @type("number") kills: number;
+}
+
 export class VoxelAcesState extends Schema {
     @type({ map: Player }) players = new MapSchema<Player>();
     @type({ map: Bullet }) bullets = new MapSchema<Bullet>();
+    @type([ LeaderboardEntry ]) leaderboard = new ArraySchema<LeaderboardEntry>();
 }

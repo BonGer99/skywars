@@ -9,9 +9,10 @@ import HUD from '@/components/ui/HUD';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Loader2, LocateFixed } from 'lucide-react';
-import type { VoxelAcesState, Player } from '@/server/rooms/state/VoxelAcesState';
+import type { VoxelAcesState, Player, LeaderboardEntry } from '@/server/rooms/state/VoxelAcesState';
 import { useSettings } from '@/context/SettingsContext';
 import { useIsMobile } from '@/hooks/use-is-mobile';
+import { generateOpponentBehavior, OpponentBehaviorOutput } from '@/ai/flows/ai-opponent-behavior';
 
 // Constants
 const WORLD_SEED = 12345;
@@ -28,6 +29,31 @@ const INTERPOLATION_FACTOR = 0.05;
 const TERRAIN_COLLISION_GEOMETRY = new THREE.BoxGeometry(1.5, 1.2, 4);
 const BULLET_COLLISION_GEOMETRY = new THREE.BoxGeometry(8, 2, 4);
 const OFFLINE_SPAWN_POS = new THREE.Vector3(200, 50, 200);
+
+// Offline Mode Types
+type OfflineEnemy = {
+    id: string;
+    mesh: THREE.Group;
+    position: THREE.Vector3;
+    quaternion: THREE.Quaternion;
+    health: number;
+    behavior: OpponentBehaviorOutput;
+    gunCooldown: number;
+};
+type PlayerPerformance = {
+    shotsFired: number;
+    shotsHit: number;
+    damageTaken: number;
+    waveStartTime: number;
+    totalPlayTime: number;
+};
+type BulletRef = {
+    id: string;
+    position: THREE.Vector3;
+    velocity: THREE.Vector3;
+    spawnTime: number;
+    mesh: THREE.Mesh;
+};
 
 
 const createVoxelPlane = (color: THREE.ColorRepresentation) => {
@@ -197,17 +223,14 @@ export default function Game({ mode, playerName: playerNameProp }: GameProps) {
         gunOverheat: 0,
         health: 100
     });
-    const localOfflineBulletsRef = useRef<{
-        id: string;
-        position: THREE.Vector3;
-        velocity: THREE.Vector3;
-        spawnTime: number;
-        mesh: THREE.Mesh;
-    }[]>([]);
+    const localOfflineBulletsRef = useRef<BulletRef[]>([]);
+    const offlineEnemiesRef = useRef<OfflineEnemy[]>([]);
+    const offlineEnemyBulletsRef = useRef<BulletRef[]>([]);
+    const playerPerformanceRef = useRef<PlayerPerformance>({ shotsFired: 0, shotsHit: 0, damageTaken: 0, waveStartTime: 0, totalPlayTime: 0 });
     
     // UI State
     const [score, setScore] = useState(0);
-    const [wave, setWave] = useState(1);
+    const [wave, setWave] = useState(0);
     const [playerHealth, setPlayerHealth] = useState(100);
     const [altitude, setAltitude] = useState(0);
     const [gunOverheat, setGunOverheat] = useState(0);
@@ -239,10 +262,10 @@ export default function Game({ mode, playerName: playerNameProp }: GameProps) {
             return 'loading';
         }
 
-        if (me.isReady) {
-            return 'playing';
-        } else if (me.health <= 0) {
+        if (me.health <= 0) {
             return 'gameover';
+        } else if (me.isReady) {
+            return 'playing';
         } else {
             return 'ready';
         }
@@ -255,6 +278,47 @@ export default function Game({ mode, playerName: playerNameProp }: GameProps) {
       router.push('/');
     }, [router]);
 
+    const startNewWave = useCallback(async () => {
+        const currentWave = wave + 1;
+        setWave(currentWave);
+        
+        playerPerformanceRef.current.waveStartTime = performance.now();
+        
+        const perf = playerPerformanceRef.current;
+        const accuracy = perf.shotsFired > 0 ? (perf.shotsHit / perf.shotsFired) * 100 : 50; // Default to 50% accuracy if no shots fired
+        const playTimeFactor = perf.totalPlayTime > 0 ? 1 / (perf.totalPlayTime / 60) : 1; // Normalize over minutes
+        const skillRating = Math.max(0, Math.min(100, accuracy - (perf.damageTaken / 20) * playTimeFactor));
+        
+        const behavior = await generateOpponentBehavior({ waveNumber: currentWave, playerSkillLevel: skillRating });
+        
+        const enemyCount = 1 + Math.floor(currentWave / 2);
+        
+        for (let i = 0; i < enemyCount; i++) {
+            const enemyId = `enemy_${currentWave}_${i}`;
+            const spawnAngle = Math.random() * Math.PI * 2;
+            const spawnDist = 800 + Math.random() * 200;
+            const spawnX = Math.cos(spawnAngle) * spawnDist;
+            const spawnZ = Math.sin(spawnAngle) * spawnDist;
+            const spawnY = Math.random() * 100 + 80;
+
+            const enemyMesh = createVoxelPlane(0xff0000);
+            enemyMesh.position.set(spawnX, spawnY, spawnZ);
+            sceneRef.current?.add(enemyMesh);
+            
+            const enemy: OfflineEnemy = {
+                id: enemyId,
+                mesh: enemyMesh,
+                position: new THREE.Vector3(spawnX, spawnY, spawnZ),
+                quaternion: new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0,0,-1), offlinePlayerRef.current.position.clone().sub(new THREE.Vector3(spawnX, spawnY, spawnZ)).normalize()),
+                health: 100,
+                behavior,
+                gunCooldown: Math.random() * 2 + 1,
+            };
+            offlineEnemiesRef.current.push(enemy);
+        }
+
+    }, [wave]);
+
     const resetOfflineGame = useCallback(() => {
         const playerState = offlinePlayerRef.current;
         playerState.position.copy(OFFLINE_SPAWN_POS);
@@ -266,18 +330,24 @@ export default function Game({ mode, playerName: playerNameProp }: GameProps) {
         setPlayerHealth(100);
         setGunOverheat(0);
         setScore(0);
-        setWave(1);
+        setWave(0);
 
         if (sceneRef.current) {
             localOfflineBulletsRef.current.forEach(b => sceneRef.current!.remove(b.mesh));
+            offlineEnemyBulletsRef.current.forEach(b => sceneRef.current!.remove(b.mesh));
+            offlineEnemiesRef.current.forEach(e => sceneRef.current!.remove(e.mesh));
         }
         localOfflineBulletsRef.current = [];
+        offlineEnemyBulletsRef.current = [];
+        offlineEnemiesRef.current = [];
+        playerPerformanceRef.current = { shotsFired: 0, shotsHit: 0, damageTaken: 0, waveStartTime: 0, totalPlayTime: 0 };
         
         altitudeWarningTimerRef.current = 5;
         boundaryWarningTimerRef.current = 7;
         offlineGameStatusRef.current = 'playing';
         setOfflineGameStatus('playing');
-    }, []);
+        startNewWave();
+    }, [startNewWave]);
 
     const handleReady = () => {
         if (mode === 'online') {
@@ -369,24 +439,38 @@ export default function Game({ mode, playerName: playerNameProp }: GameProps) {
                     currentY += height * 0.8;
                 }
             }
+
+            const matrix = new THREE.Matrix4();
+            
+            // Instanced Trees
+            const trunkGeo = new THREE.CylinderGeometry(1, 1, 10, 6);
+            const leavesGeo = new THREE.ConeGeometry(5, 15, 8);
+            const treeMat = new THREE.MeshLambertMaterial({ color: 0x8B4513, flatShading: true });
+            const leavesMat = new THREE.MeshLambertMaterial({ color: 0x006400, flatShading: true });
+            const instancedTrunkMesh = new THREE.InstancedMesh(trunkGeo, treeMat, 50);
+            const instancedLeavesMesh = new THREE.InstancedMesh(leavesGeo, leavesMat, 50);
+            scene.add(instancedTrunkMesh, instancedLeavesMesh);
+
             for (let i = 0; i < 50; i++) {
-                const treeMat = new THREE.MeshLambertMaterial({ color: 0x8B4513, flatShading: true });
-                const leavesMat = new THREE.MeshLambertMaterial({ color: 0x006400, flatShading: true });
                 const treeX = (seededRandom() - 0.5) * 1800;
                 const treeZ = (seededRandom() - 0.5) * 1800;
                 
-                const trunkGeo = new THREE.CylinderGeometry(1, 1, 10, 6);
-                const trunk = new THREE.Mesh(trunkGeo, treeMat);
-                trunk.position.set(treeX, GROUND_Y + 5, treeZ);
-                scene.add(trunk);
-                collidableObjects.push(createScaledBox(trunk, 0.8));
+                matrix.setPosition(treeX, GROUND_Y + 5, treeZ);
+                instancedTrunkMesh.setMatrixAt(i, matrix);
+                const trunkBox = new THREE.Box3().setFromBufferAttribute(trunkGeo.attributes.position as THREE.BufferAttribute);
+                trunkBox.applyMatrix4(matrix);
+                collidableObjects.push(trunkBox);
 
-                const leavesGeo = new THREE.ConeGeometry(5, 15, 8);
-                const leaves = new THREE.Mesh(leavesGeo, leavesMat);
-                leaves.position.set(treeX, GROUND_Y + 15, treeZ);
-                scene.add(leaves);
-                collidableObjects.push(createScaledBox(leaves, 0.8));
+                matrix.setPosition(treeX, GROUND_Y + 15, treeZ);
+                instancedLeavesMesh.setMatrixAt(i, matrix);
+                const leavesBox = new THREE.Box3().setFromBufferAttribute(leavesGeo.attributes.position as THREE.BufferAttribute);
+                leavesBox.applyMatrix4(matrix);
+                collidableObjects.push(leavesBox);
             }
+            instancedTrunkMesh.instanceMatrix.needsUpdate = true;
+            instancedLeavesMesh.instanceMatrix.needsUpdate = true;
+
+
             for (let i = 0; i < 15; i++) {
                 const lakeGeo = new THREE.CylinderGeometry(seededRandom() * 40 + 30, seededRandom() * 40 + 30, 0.5, 32);
                 const lakeMat = new THREE.MeshBasicMaterial({ color: 0x4682B4 });
@@ -409,24 +493,37 @@ export default function Game({ mode, playerName: playerNameProp }: GameProps) {
                 tank.position.set((seededRandom() - 0.5) * 1800, GROUND_Y + 1.5, (seededRandom() - 0.5) * 1800);
                 scene.add(tank);
             }
-            const createCloud = () => {
-                const cloud = new THREE.Group();
-                const mat = new THREE.MeshBasicMaterial({ color: 0xffffff, opacity: 0.8, transparent: true });
-                const puffCount = Math.floor(Math.random() * 5) + 3;
-                for(let i = 0; i < puffCount; i++) {
-                    const size = Math.random() * 40 + 20;
-                    const puffGeo = new THREE.BoxGeometry(size, size, size);
-                    const puff = new THREE.Mesh(puffGeo, mat);
-                    puff.position.set((Math.random() - 0.5) * 60, (Math.random() - 0.5) * 20, (Math.random() - 0.5) * 60);
-                    cloud.add(puff);
+            
+            // Instanced Clouds
+            const CLOUD_COUNT = 50;
+            const MAX_PUFFS_PER_CLOUD = 8;
+            const puffGeo = new THREE.BoxGeometry(1, 1, 1);
+            const puffMat = new THREE.MeshBasicMaterial({ color: 0xffffff, opacity: 0.8, transparent: true });
+            const instancedCloudMesh = new THREE.InstancedMesh(puffGeo, puffMat, CLOUD_COUNT * MAX_PUFFS_PER_CLOUD);
+            scene.add(instancedCloudMesh);
+            
+            let instanceIndex = 0;
+            for (let i = 0; i < CLOUD_COUNT; i++) {
+                const cloudX = (seededRandom() - 0.5) * 1800;
+                const cloudY = seededRandom() * 100 + 80;
+                const cloudZ = (seededRandom() - 0.5) * 1800;
+                const puffCount = Math.floor(seededRandom() * 5) + 3;
+                
+                for (let j = 0; j < puffCount; j++) {
+                    const size = seededRandom() * 40 + 20;
+                    const puffX = cloudX + (seededRandom() - 0.5) * 60;
+                    const puffY = cloudY + (seededRandom() - 0.5) * 20;
+                    const puffZ = cloudZ + (seededRandom() - 0.5) * 60;
+
+                    matrix.makeScale(size, size, size);
+                    matrix.setPosition(puffX, puffY, puffZ);
+                    if (instanceIndex < CLOUD_COUNT * MAX_PUFFS_PER_CLOUD) {
+                        instancedCloudMesh.setMatrixAt(instanceIndex++, matrix);
+                    }
                 }
-                return cloud;
             }
-            for (let i = 0; i < 50; i++) {
-                const cloud = createCloud();
-                cloud.position.set((Math.random() - 0.5) * 1800, Math.random() * 100 + 80, (Math.random() - 0.5) * 1800);
-                scene.add(cloud);
-            }
+            instancedCloudMesh.instanceMatrix.needsUpdate = true;
+
 
             if (mode === 'offline') {
                 const planeMesh = createVoxelPlane(0x0077ff);
@@ -447,6 +544,7 @@ export default function Game({ mode, playerName: playerNameProp }: GameProps) {
                     isConnectingRef.current = false;
                     
                     room.onStateChange(() => {
+                        if (!isMounted) return;
                         setGameStatus(getGameStatus());
                     });
 
@@ -528,6 +626,7 @@ export default function Game({ mode, playerName: playerNameProp }: GameProps) {
                         renderer.render(scene, camera);
                         return;
                     }
+                    playerPerformanceRef.current.totalPlayTime += delta;
 
                     myPlane = localPlanes['offline_player'];
                     const playerState = offlinePlayerRef.current;
@@ -558,6 +657,7 @@ export default function Game({ mode, playerName: playerNameProp }: GameProps) {
                     setGunOverheat(playerState.gunOverheat);
 
                     if ((keysPressed.current[' '] || keysPressed.current['mouse0']) && playerState.gunCooldown <= 0 && playerState.gunOverheat < 100) {
+                        playerPerformanceRef.current.shotsFired++;
                         playerState.gunCooldown = 0.1;
                         playerState.gunOverheat += 5;
                         const bulletId = Math.random().toString(36).substring(2, 15);
@@ -574,6 +674,34 @@ export default function Game({ mode, playerName: playerNameProp }: GameProps) {
                         }
                     }
 
+                    // UPDATE OFFLINE AI
+                    offlineEnemiesRef.current.forEach(enemy => {
+                        // Simplified AI: fly towards player
+                        const directionToPlayer = playerState.position.clone().sub(enemy.position).normalize();
+                        const forwardVector = new THREE.Vector3(0, 0, -1).applyQuaternion(enemy.quaternion);
+                        const rotation = new THREE.Quaternion().setFromUnitVectors(forwardVector, directionToPlayer);
+                        enemy.quaternion.slerp(rotation, 0.02);
+                        enemy.position.add(forwardVector.multiplyScalar(BASE_SPEED * 0.8 * delta)); // AI is slightly slower
+                        enemy.mesh.position.copy(enemy.position);
+                        enemy.mesh.quaternion.copy(enemy.quaternion);
+
+                        enemy.gunCooldown = Math.max(0, enemy.gunCooldown - delta);
+                        const angleToPlayer = forwardVector.angleTo(directionToPlayer);
+                        if(enemy.gunCooldown <= 0 && angleToPlayer < 0.2) { // Fire if aimed at player
+                             enemy.gunCooldown = 2.0; // Slower fire rate for AI
+                             const bulletId = Math.random().toString(36).substring(2, 15);
+                             const bulletVelocity = new THREE.Vector3(0, 0, -BULLET_SPEED).applyQuaternion(enemy.quaternion);
+                             const bulletGeo = new THREE.BoxGeometry(0.2, 0.2, 1);
+                             const bulletMat = new THREE.MeshBasicMaterial({ color: 0xff8800 });
+                             const bulletMesh = new THREE.Mesh(bulletGeo, bulletMat);
+                             bulletMesh.position.copy(enemy.position);
+                             scene.add(bulletMesh);
+                             offlineEnemyBulletsRef.current.push({ id: bulletId, position: enemy.position.clone(), velocity: bulletVelocity, spawnTime: time, mesh: bulletMesh });
+                        }
+                    });
+
+
+                    // UPDATE BULLETS (PLAYER)
                     localOfflineBulletsRef.current = localOfflineBulletsRef.current.filter(bullet => {
                         bullet.position.add(bullet.velocity.clone().multiplyScalar(delta));
                         bullet.mesh.position.copy(bullet.position);
@@ -581,9 +709,50 @@ export default function Game({ mode, playerName: playerNameProp }: GameProps) {
                             scene.remove(bullet.mesh);
                             return false;
                         }
+                        // Collision check
+                        for (const enemy of offlineEnemiesRef.current) {
+                            if (enemy.mesh.position.distanceTo(bullet.position) < 5) {
+                                enemy.health -= 25;
+                                playerPerformanceRef.current.shotsHit++;
+                                scene.remove(bullet.mesh);
+                                if(enemy.health <= 0) {
+                                    setScore(s => s + 100);
+                                    scene.remove(enemy.mesh);
+                                    offlineEnemiesRef.current = offlineEnemiesRef.current.filter(e => e.id !== enemy.id);
+                                    if(offlineEnemiesRef.current.length === 0) {
+                                        playerPerformanceRef.current.totalPlayTime += (performance.now() - playerPerformanceRef.current.waveStartTime) / 1000;
+                                        startNewWave();
+                                    }
+                                }
+                                return false; // remove bullet
+                            }
+                        }
                         return true;
                     });
                     
+                    // UPDATE BULLETS (AI)
+                     offlineEnemyBulletsRef.current = offlineEnemyBulletsRef.current.filter(bullet => {
+                        bullet.position.add(bullet.velocity.clone().multiplyScalar(delta));
+                        bullet.mesh.position.copy(bullet.position);
+                        if (time - bullet.spawnTime > BULLET_LIFESPAN_MS) {
+                            scene.remove(bullet.mesh);
+                            return false;
+                        }
+                         if (myPlane && myPlane.position.distanceTo(bullet.position) < 5) {
+                             playerState.health -= 10;
+                             playerPerformanceRef.current.damageTaken += 10;
+                             setPlayerHealth(playerState.health);
+                             scene.remove(bullet.mesh);
+                             if(playerState.health <= 0) {
+                                 playerState.health = 0;
+                                 offlineGameStatusRef.current = 'gameover';
+                                 setOfflineGameStatus('gameover');
+                             }
+                             return false; // remove bullet
+                         }
+                        return true;
+                    });
+
                     if (myPlane) {
                         let hasCrashed = false;
                         const terrainHitboxMesh = new THREE.Mesh(TERRAIN_COLLISION_GEOMETRY);
@@ -670,6 +839,7 @@ export default function Game({ mode, playerName: playerNameProp }: GameProps) {
             isConnectingRef.current = false;
             window.removeEventListener('keydown', () => {}); window.removeEventListener('keyup', () => {}); window.removeEventListener('mousedown', () => {}); window.removeEventListener('mouseup', () => {}); window.removeEventListener('resize', () => {});
             Object.values(localPlanes).forEach(plane => scene.remove(plane)); Object.values(localBullets).forEach(bullet => scene.remove(bullet)); localOfflineBulletsRef.current.forEach(b => scene.remove(b.mesh));
+            offlineEnemiesRef.current.forEach(e => scene.remove(e.mesh)); offlineEnemyBulletsRef.current.forEach(b => scene.remove(b.mesh));
             if(mountRef.current && renderer.domElement && mountRef.current.contains(renderer.domElement)) { mountRef.current.removeChild(renderer.domElement); }
             renderer.dispose(); scene.clear();
         };
@@ -702,7 +872,7 @@ export default function Game({ mode, playerName: playerNameProp }: GameProps) {
                         </CardHeader>
                         <CardContent className="p-8 pt-0">
                              {gameStatus === 'gameover' 
-                                ? <p className="text-muted-foreground mb-6">You crashed! Better luck next time.</p>
+                                ? <p className="text-muted-foreground mb-6">You were defeated on wave {wave} with a score of {score}. Better luck next time!</p>
                                 : <p className="text-muted-foreground mb-6">Use WASD to steer, Shift for boost, and Left Click or Space to fire. Good luck!</p>
                              }
                             <Button size="lg" className="w-full text-lg py-6" onClick={handleReady}>
@@ -763,7 +933,7 @@ export default function Game({ mode, playerName: playerNameProp }: GameProps) {
             )}
             
             {gameStatus === 'playing' ? (
-                 <HUD score={score} wave={wave} health={playerHealth} overheat={gunOverheat} altitude={altitude} mode={mode} players={roomRef.current?.state.players} onLeaveGame={handleLeaveGame} />
+                 <HUD score={score} wave={wave} health={playerHealth} overheat={gunOverheat} altitude={altitude} mode={mode} players={roomRef.current?.state.players} leaderboard={roomRef.current?.state.leaderboard} onLeaveGame={handleLeaveGame} />
             ) : null}
 
         </div>

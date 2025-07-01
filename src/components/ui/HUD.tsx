@@ -1,7 +1,7 @@
 import { Button } from '@/components/ui/button';
 import { Progress } from '@/components/ui/progress';
-import type { MapSchema } from '@colyseus/schema';
-import type { Player } from '@/server/rooms/state/VoxelAcesState';
+import type { MapSchema, ArraySchema } from '@colyseus/schema';
+import type { Player, LeaderboardEntry } from '@/server/rooms/state/VoxelAcesState';
 import { Plus, Flame, ArrowUp, Star, Users, Home, Settings } from 'lucide-react';
 import { SettingsDialog } from './SettingsDialog';
 import ServerLeaderboard from './ServerLeaderboard';
@@ -14,10 +14,11 @@ interface HUDProps {
   altitude: number;
   mode: 'offline' | 'online';
   players?: MapSchema<Player>;
+  leaderboard?: ArraySchema<LeaderboardEntry>;
   onLeaveGame: () => void;
 }
 
-export default function HUD({ score, wave, health, overheat, altitude, mode, players, onLeaveGame }: HUDProps) {
+export default function HUD({ score, wave, health, overheat, altitude, mode, players, leaderboard, onLeaveGame }: HUDProps) {
   return (
     <div className="absolute inset-0 p-2 sm:p-4 text-white font-headline pointer-events-none select-none z-10 flex justify-between items-start">
       {/* Left Stats */}
@@ -38,7 +39,7 @@ export default function HUD({ score, wave, health, overheat, altitude, mode, pla
 
       {/* Right Stats & Actions */}
       <div className="flex flex-col items-end gap-y-2 pointer-events-auto">
-        {mode === 'online' && players && <ServerLeaderboard players={players} />}
+        {mode === 'online' && leaderboard && <ServerLeaderboard leaderboard={leaderboard} />}
         
         <div className="bg-black/20 backdrop-blur-sm p-2 rounded-lg flex items-center gap-x-2 sm:gap-x-4 text-lg">
             <div className="flex items-center gap-1 sm:gap-1.5" title="Kills">
